@@ -1,0 +1,4 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="power_service">Deja que el botón APAGAR de Pixel Launcher abra el menú de apagado. No lee nada de la pantalla.</string>
+</resources>
