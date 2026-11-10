@@ -53,7 +53,12 @@ class _ShellState extends State<Shell> {
   @override
   void initState() {
     super.initState();
-    _life = AppLifecycleListener(onResume: store.load);
+    _life = AppLifecycleListener(
+      onResume: () {
+        store.load();
+        startMcp(); // por si se cayó (ver claude.dart)
+      },
+    );
     store.load();
     tabStore.load();
     startMcp();

@@ -186,6 +186,7 @@ class Bridge extends ChangeNotifier {
   }
 
   void send(String id, String cwd, String text) {
+    startMcp(); // sin él, claude arranca sin `approve` y no puede usar ninguna tool
     approvedTurn.remove(id);
     busy.add(id);
     // claude no repite los mensajes del usuario: lo mostramos ya (la historia lo trae al reconectar)
@@ -326,11 +327,24 @@ final _tools = [
 ];
 
 /// Escucha en 127.0.0.1:8766/mcp. JSON-RPC sin SSE; todo pedido lleva el token.
-Future<void> startMcp() async {
-  try {
-    (await HttpServer.bind(InternetAddress.loopbackIPv4, 8766)).listen(_serve);
-  } on SocketException {
-    // el puerto ya está tomado (otra instancia): sin MCP
+HttpServer? _mcp;
+Future<void>? _binding;
+
+/// Levanta el MCP si no está. Se puede llamar de más (al volver al launcher y antes de cada mensaje).
+/// Tras reinstalarse, Android abre el launcher nuevo antes de que el viejo suelte el puerto: reintenta.
+Future<void> startMcp() => _mcp != null ? Future.value() : _binding ??= _bind().whenComplete(() => _binding = null);
+
+Future<void> _bind() async {
+  for (var i = 0; i < 30; i++) {
+    try {
+      final s = _mcp = await HttpServer.bind(InternetAddress.loopbackIPv4, 8766);
+      s.listen(_serve, onDone: () => _mcp = null);
+      if (i > 0) bridge.say(null);
+      return;
+    } on SocketException catch (e) {
+      bridge.say('Sin servidor de permisos (puerto 8766): $e. Reintentando…');
+      await Future<void>.delayed(const Duration(seconds: 2));
+    }
   }
 }
 
