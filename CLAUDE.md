@@ -16,3 +16,13 @@ Launcher Android en Flutter con estética pixel-art. El usuario escribe en espa�
 - Todo lo clickeable es un `PixelTile`, así anda con D-pad/gamepad. Nada de ripples Material ni bordes redondeados.
 - Para verificar: `flutter analyze && flutter test`. Para probar en el emulador: `.\dev.ps1 emu`, después `.\dev.ps1 run`. Para sacar captura: `adb exec-out screencap -p` desde Bash.
 - Paquetes nuevos: solo si Flutter puro no alcanza. Si hace falta código nativo, va en `MainActivity.kt` con un MethodChannel (referencia: FLauncher/LtvLauncher).
+
+## Git: se trabaja desde la PC y desde el teléfono (pestaña TERMINAL)
+
+El repo de verdad es GitHub (`AdrianoPistoia/pixel-launcher`, rama `main`); la PC y el teléfono son copias.
+
+- Antes de tocar código: `git pull --rebase`. Al terminar algo que compila y pasa los tests: commit chico y `git push` enseguida. Nada de trabajo sin pushear de un día para el otro.
+- Si el push se rechaza: `git pull --rebase`, `flutter analyze && flutter test`, y push de nuevo. Si el rebase tiene conflictos, resolvelos entendiendo los dos cambios; si no está claro qué gana, pará y preguntá.
+- Nunca `push --force` ni `reset --hard` sobre algo pusheado.
+- Trabajo largo o en paralelo con el otro lado: rama propia (`pc/<tema>` o `cel/<tema>`) y merge a `main` cuando esté listo.
+- Commits viejos de `launcher.bundle` (`98ccdaf`, `2656fe4`, …) eran fotos de prueba: todo su contenido ya está en `main`. Ignoralos.
