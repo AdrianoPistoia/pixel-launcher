@@ -62,8 +62,8 @@ build nuevo de sí mismo), Claude sigue trabajando y al reconectar se retoma la 
 El MCP (permisos) sí vive en el launcher: si Android lo mata, las tools de un turno en curso fallan
 (`ECONNREFUSED`). Por eso, con un turno en curso el launcher levanta un servicio en primer plano
 (`KeepAlive`, aviso "Claude está trabajando"). Y cuando un cliente se autentica, el puente cierra los `claude`
-que no tienen turno en curso: quedaron con la conexión MCP vieja, y el próximo `send` los retoma con
-`--resume`. `bridge.js` va como asset del launcher; para cargar uno nuevo: pasos → REINICIAR PUENTE.
+(los que están en un turno, al terminarlo): quedaron sin el MCP (`mcp__launcher__approve not found`), y
+el próximo `send` los retoma con `--resume`. `bridge.js` va como asset del launcher; para cargar uno nuevo: pasos → REINICIAR PUENTE.
 
 Claude se lanza con:
 

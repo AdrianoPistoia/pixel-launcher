@@ -83,6 +83,7 @@ function start(s) {
     let event; try { event = JSON.parse(l); } catch { return say(s.id, 'stdout no-JSON:', l.slice(0, 200)); }
     if (event.type === 'result') p.busy = false;
     broadcast(s.id, { op: 'event', id: s.id, event });
+    if (event.type === 'result' && p.stale) child.kill(); // ver el reconectar del launcher, abajo
   }));
   child.on('error', e => { gone(); say(s.id, 'spawn', e.message); broadcast(s.id, { op: 'error', id: s.id, message: 'no pude lanzar claude: ' + e.message }); });
   child.on('close', (code, sig) => {
@@ -138,9 +139,10 @@ net.createServer(sock => {
     if (!ok) {
       if (!m || !tokenOk(m.token)) return sock.destroy();
       ok = true;
-      // Volvió el launcher (lo mataron o se reinstaló): su MCP es otro proceso y los claude quietos
-      // quedan con la conexión vieja rota. Se cierran; el próximo send los retoma con --resume.
-      for (const p of procs.values()) if (!p.busy) p.child.kill();
+      // Volvió el launcher (lo mataron o se reinstaló): su MCP es otro proceso y los claude ya no lo
+      // ven ("mcp__launcher__approve not found"). Se cierran (los que están en un turno, al terminarlo);
+      // el próximo send los retoma con --resume y un MCP nuevo.
+      for (const p of procs.values()) if (p.busy) p.stale = true; else p.child.kill();
       return;
     }
     if (!m || typeof m !== 'object') return send(sock, { op: 'error', message: 'JSON inválido' });
