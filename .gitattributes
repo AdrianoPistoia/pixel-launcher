@@ -1,0 +1,2 @@
+# Van como assets a bash/node en el teléfono: con CRLF no corren
+termux/* text eol=lf
