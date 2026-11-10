@@ -13,7 +13,9 @@ Estado: ✅ en el esqueleto · 🔜 siguiente (fácil, Flutter puro o un paquete
 | Swipe entre pestañas | Kvaesitso, Olauncher | ✅ | `PageView` |
 | Pestaña de ajustes fija | todos | ✅ | `SystemPage` |
 | Pestaña "+": crear cualquier tipo de pestaña; renombrar, mover y borrar (también manteniendo apretada la pestaña) | — | ✅ | `AddTabPage`, `showTabMenu`; SYS y "+" no se borran |
-| Vistas Terminal, Bitácora, Consola y Órbita (de las propuestas de UX) | — | ✅ | `lib/views.dart` |
+| Vistas Terminal, Bitácora, Consola y Órbita (de las propuestas de UX). La Terminal de búsqueda ahora es la vista "buscar" de la pestaña TERMINAL | — | ✅ | `lib/views.dart` |
+| Pestaña TERMINAL: Claude Code (login Pro/Max) en Termux → Debian, con chat pixel por sesión (D-pad, ESCRIBIR/DETENER), pasos de instalación, permisos con diálogo según riesgo y servidor MCP del launcher (Shizuku, apps, pestañas); vistas claude.ai (web + app oficial) y buscar; Y o menú cambia de vista | — | ✅ | `lib/terminal.dart`, `lib/claude.dart`, `termux/`. Probada en el emulador x86_64 (puente, MCP, permisos, Shizuku); falta el handheld arm64, con login real y compilando el launcher. Ver `docs/terminal.md` |
+| Vista Anillo: canales elegidos por pestaña (menú → Elegir canales; sin elegir, hasta 8: fijadas y después las más usadas) en una órbita inclinada; gira con flechas, swipe o tocando, el de adelante abre; panel ancho con nombre, canal y detalle | ALTIMIT Mine OS (.hack//G.U.) | ✅ | `RingPage` en `lib/gu.dart` |
 | Vistas animadas: Órbita viva (anillos que giran, estrellas, apertura con caída a la luna), Consola arcade (flote, brillo, rebote, persianas al abrir) y Terminal que bootea (booteo tipeado, cascada, coincidencias resaltadas, barra al abrir) | — | ✅ | `docs/animaciones.md` |
 | Registro de uso: aperturas por app y por hora, exportable | — | ✅ | `store.launch`, SYS → "Copiar datos de uso" |
 | Barra de pestañas arriba o abajo, en un renglón deslizable | — | ✅ | SYS → "Pestañas" |
@@ -85,7 +87,9 @@ Estado: ✅ en el esqueleto · 🔜 siguiente (fácil, Flutter puro o un paquete
 | Feature | Estado | Cómo |
 |---|---|---|
 | Fuente pixel, bordes rectos, sombra dura | ✅ | `Px` en `lib/ui.dart` |
-| Paletas con nombre (temas) | 🔜 | lista de paletas; `Px` lee la activa |
+| Estilos: pixel o G.U. (navy, líneas cian, acentos ámbar, paneles biselados, fondo de panal, fuente Space Grotesk, íconos lisos) | ✅ | `Px.style` (SYS → Estilo); los valores de `Px` son getters por estilo. Panal y espada en `lib/gu.dart` |
+| SYS en G.U.: menú corrido a la derecha con una espada de sierra y cadena cruzando de fondo | ✅ | `SwordBackdrop` (dibujo propio, `CustomPainter`) |
+| Más paletas con nombre | 🔜 | otro valor de `PxStyle` |
 | Fondos propios, incluso GIF animados | 🔜 | `Image` (Flutter anima GIF solo) |
 | Pixelar fondos | 🔜 | el mismo truco de `cacheWidth` que los íconos |
 | Efectos de pantalla (CRT, scanlines, ruido) | 🔜 | `CustomPainter` encima de todo |

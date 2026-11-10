@@ -5,6 +5,7 @@ Launcher Android en Flutter con estética pixel-art. El usuario escribe en espa�
 - TrinketOS (ismslv/trinketos) es closed-source: usalo solo como referencia de features. No copies sus assets, sprites, textos ni nombres.
 - Roadmap y estado: `docs/features.md`. Cuando implementes una feature, actualizá su estado ahí.
 - Todo lo visual sale de `Px` (`lib/ui.dart`). No hardcodees colores ni fuentes en otros archivos.
+- `Px` tiene dos estilos (pixel y G.U., `Px.style`): sus colores y fuentes son getters, no `const`, así que no van en expresiones `const`. Tamaños de letra pensados para VT323: `Px.sz(n)`.
 - Abrir apps siempre con `store.launch(pkg)` (registra el uso que alimenta Terminal, Consola y Órbita), nunca `InstalledApps.startApp` directo.
 - Tipos de pestaña en `tabKinds` (`lib/tabs.dart`); todas las pestañas del usuario son borrables, solo SYS y "+" son fijas.
 - Diálogos: `showPixelMenu` / `askText` / `showPixelDialog` de `ui.dart`, nunca diálogos Material crudos.

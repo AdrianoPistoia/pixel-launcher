@@ -1,0 +1,151 @@
+// Puente launcher <-> Claude Code (corre dentro de proot Debian, como root).
+// Protocolo y contrato: docs/terminal.md, sección "Puente". Solo stdlib de Node (>=18).
+const net = require('net'), fs = require('fs'), os = require('os'), path = require('path');
+const { spawn } = require('child_process');
+const { randomUUID, timingSafeEqual } = require('crypto');
+
+// Las env vars son solo para probar en otro lado (PC); en producción valen los defaults.
+const DIR = process.env.PIXEL_DIR || path.join(os.homedir(), '.pixel');
+const CLAUDE_DIR = process.env.CLAUDE_CONFIG_DIR || path.join(os.homedir(), '.claude');
+const PORT = +process.env.PORT || 8765;
+const EXTRA = (process.env.CLAUDE_BRIDGE_ARGS || '').split(/\s+/).filter(Boolean); // ej. "--model haiku" (solo test)
+const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+
+fs.mkdirSync(DIR, { recursive: true });
+const log = fs.createWriteStream(path.join(DIR, 'bridge.log'), { flags: 'a' });
+const say = (...a) => log.write(`${new Date().toISOString()} ${a.join(' ')}\n`);
+process.on('uncaughtException', e => say('uncaught', e.stack || e)); // un bug no tiene que tirar las sesiones
+
+let TOKEN;
+try { TOKEN = fs.readFileSync(path.join(DIR, 'token'), 'utf8').trim(); } catch { TOKEN = ''; }
+if (!TOKEN) { say('falta', path.join(DIR, 'token')); console.error('falta el token'); process.exit(1); }
+const tokenOk = t => {
+  const a = Buffer.from(String(t)), b = Buffer.from(TOKEN);
+  return a.length === b.length && timingSafeEqual(a, b);
+};
+
+// Registro de sesiones {id,cwd,title,updated} en ~/.pixel/sessions.json.
+const REG = path.join(DIR, 'sessions.json');
+const sessions = new Map();
+try { for (const s of JSON.parse(fs.readFileSync(REG, 'utf8'))) sessions.set(s.id, s); } catch {}
+const save = () => {
+  try { fs.writeFileSync(REG + '.tmp', JSON.stringify([...sessions.values()])); fs.renameSync(REG + '.tmp', REG); }
+  catch (e) { say('no pude guardar sessions.json', e.message); }
+};
+
+const procs = new Map(); // id -> { child }
+const subs = new Map();  // id -> Set<socket> suscriptos
+
+const send = (sock, msg) => {
+  try { if (sock.writable) sock.write(JSON.stringify(msg) + '\n'); } catch (e) { say('write', e.message); }
+}; // ponytail: sin backpressure; si un cliente lento se atrasa, Node bufferea en memoria
+const broadcast = (id, msg) => subs.get(id)?.forEach(s => send(s, msg));
+const subscribe = (id, sock) => {
+  if (!subs.has(id)) subs.set(id, new Set());
+  subs.get(id).add(sock);
+};
+
+// Parte un stream en líneas (maneja líneas partidas entre chunks). Las streams van en utf8.
+const lines = cb => {
+  let buf = '';
+  return chunk => {
+    buf += chunk;
+    for (let i; (i = buf.indexOf('\n')) >= 0;) {
+      const l = buf.slice(0, i).trim(); buf = buf.slice(i + 1);
+      if (l) cb(l);
+    }
+  };
+};
+
+// Transcript de Claude: ~/.claude/projects/<cwd con todo no-alfanumérico -> '-'>/<id>.jsonl.
+// Si el escapado no coincide (paths largos, symlinks) busca el id en todas las carpetas.
+const transcript = (id, cwd) => {
+  const root = path.join(CLAUDE_DIR, 'projects'), f = id + '.jsonl';
+  const p = path.join(root, cwd.replace(/[^a-zA-Z0-9]/g, '-'), f);
+  if (fs.existsSync(p)) return p;
+  try { for (const d of fs.readdirSync(root)) if (fs.existsSync(path.join(root, d, f))) return path.join(root, d, f); } catch {}
+};
+
+function start(s) {
+  fs.mkdirSync(s.cwd, { recursive: true });
+  const mcp = { mcpServers: { launcher: { type: 'http', url: `http://127.0.0.1:8766/mcp?session=${s.id}&cwd=${encodeURIComponent(s.cwd)}`, headers: { Authorization: 'Bearer ' + TOKEN } } } };
+  const args = ['-p', '--input-format', 'stream-json', '--output-format', 'stream-json', '--verbose',
+    '--mcp-config', JSON.stringify(mcp), '--permission-prompt-tool', 'mcp__launcher__approve',
+    ...(transcript(s.id, s.cwd) ? ['--resume', s.id] : ['--session-id', s.id]), ...EXTRA];
+  const child = spawn('claude', args, { cwd: s.cwd, stdio: ['pipe', 'pipe', 'pipe'] });
+  const p = { child, busy: false }; // busy: turno en curso
+  procs.set(s.id, p);
+  const gone = () => { if (procs.get(s.id) === p) procs.delete(s.id); };
+  child.stdin.on('error', e => say(s.id, 'stdin', e.message));
+  child.stderr.pipe(log, { end: false });
+  child.stdout.setEncoding('utf8');
+  child.stdout.on('data', lines(l => {
+    let event; try { event = JSON.parse(l); } catch { return say(s.id, 'stdout no-JSON:', l.slice(0, 200)); }
+    if (event.type === 'result') p.busy = false;
+    broadcast(s.id, { op: 'event', id: s.id, event });
+  }));
+  child.on('error', e => { gone(); say(s.id, 'spawn', e.message); broadcast(s.id, { op: 'error', id: s.id, message: 'no pude lanzar claude: ' + e.message }); });
+  child.on('close', (code, sig) => {
+    gone(); say(s.id, 'exit', code, sig || '');
+    code ??= -1; // muerto por señal (close): que el cliente reciba siempre un entero
+    const r = sessions.get(s.id); if (r) { r.updated = Date.now(); save(); }
+    broadcast(s.id, { op: 'exit', id: s.id, code });
+  });
+  return p;
+}
+
+function handle(sock, m) {
+  const { op, id } = m;
+  if (op === 'sessions') {
+    const list = [...sessions.values()].sort((a, b) => b.updated - a.updated).map(s => ({ ...s, running: procs.has(s.id) }));
+    return send(sock, { op: 'sessions', list });
+  }
+  if (!['open', 'send', 'stop', 'close'].includes(op)) return send(sock, { op: 'error', message: 'op desconocida: ' + op });
+  if (!UUID.test(id)) return send(sock, { op: 'error', message: 'id inválido' });
+  const known = sessions.get(id);
+  if (op === 'open') {
+    const f = transcript(id, path.resolve(os.homedir(), known?.cwd || m.cwd || ''));
+    if (f) for (const l of fs.readFileSync(f, 'utf8').split('\n')) {
+      let o; try { o = JSON.parse(l); } catch { continue; }
+      if ((o.type === 'user' || o.type === 'assistant') && !o.isMeta && !o.isSidechain)
+        send(sock, { op: 'event', id, event: { type: o.type, message: o.message } });
+    }
+    subscribe(id, sock); // en el mismo tick que la historia: no se pierde ningún evento en vivo
+  } else if (op === 'send') {
+    const text = typeof m.text === 'string' ? m.text : '';
+    const cwd = known?.cwd || (typeof m.cwd === 'string' && m.cwd && path.resolve(os.homedir(), m.cwd));
+    if (!text || !cwd) return send(sock, { op: 'error', id, message: 'send necesita text y cwd' });
+    const s = known || { id, cwd, title: text.replace(/\s+/g, ' ').slice(0, 60), updated: 0 };
+    s.updated = Date.now(); sessions.set(id, s); save();
+    subscribe(id, sock); // quien manda sin haber hecho open igual ve las respuestas
+    const p = procs.get(id) || start(s);
+    p.busy = true;
+    p.child.stdin.write(JSON.stringify({ type: 'user', message: { role: 'user', content: text } }) + '\n');
+  } else if (op === 'stop') {
+    procs.get(id)?.child.stdin.write(JSON.stringify({ type: 'control_request', request_id: randomUUID(), request: { subtype: 'interrupt' } }) + '\n');
+  } else {
+    procs.get(id)?.child.kill(); // la sesión queda en disco; el 'close' del hijo avisa con op:exit
+  }
+}
+
+net.createServer(sock => {
+  sock.setEncoding('utf8');
+  sock.on('error', e => say('cliente', e.message));
+  sock.on('close', () => subs.forEach(set => set.delete(sock)));
+  let ok = false;
+  const feed = lines(l => {
+    let m; try { m = JSON.parse(l); } catch { m = null; }
+    if (!ok) {
+      if (!m || !tokenOk(m.token)) return sock.destroy();
+      ok = true;
+      // Volvió el launcher (lo mataron o se reinstaló): su MCP es otro proceso y los claude quietos
+      // quedan con la conexión vieja rota. Se cierran; el próximo send los retoma con --resume.
+      for (const p of procs.values()) if (!p.busy) p.child.kill();
+      return;
+    }
+    if (!m || typeof m !== 'object') return send(sock, { op: 'error', message: 'JSON inválido' });
+    try { handle(sock, m); } catch (e) { say('handle', e.stack); send(sock, { op: 'error', id: m.id, message: e.message }); }
+  });
+  sock.on('data', c => { feed(c); if (!ok && sock.bytesRead > 4096) sock.destroy(); }); // sin token no hay buffer infinito
+}).on('error', e => { say('server', e.message); process.exit(1); })
+  .listen(PORT, '127.0.0.1', () => say('escuchando en 127.0.0.1:' + PORT));

@@ -1,9 +1,11 @@
 import 'dart:convert';
 
-import 'package:flutter/foundation.dart';
 import 'package:flutter/services.dart';
+import 'package:flutter/widgets.dart';
 import 'package:installed_apps/installed_apps.dart';
 import 'package:shared_preferences/shared_preferences.dart';
+
+import 'ui.dart';
 
 /// Canal con el código nativo (`MainActivity.kt`): fotos, borrar fotos y apagar.
 const native = MethodChannel('pixel_launcher');
@@ -29,6 +31,8 @@ class AppStore extends ChangeNotifier {
     pinned = await _prefs.getStringList('pinned') ?? [];
     browser = await _prefs.getString('browser');
     pad = await _prefs.getString('pad') ?? 'xbox';
+    final style = PxStyle.values.asNameMap()[await _prefs.getString('style')] ?? PxStyle.pixel;
+    if (style != Px.style) _restyle(style);
     final raw = await _prefs.getString('usage');
     usage = raw == null
         ? {}
@@ -77,6 +81,18 @@ class AppStore extends ChangeNotifier {
     browser = pkg;
     notifyListeners();
     await (pkg == null ? _prefs.remove('browser') : _prefs.setString('browser', pkg));
+  }
+
+  /// Cambia el estilo y redibuja todo, también los widgets const (que si no, no se enteran).
+  void _restyle(PxStyle style) {
+    Px.style = style;
+    WidgetsBinding.instance.reassembleApplication();
+  }
+
+  Future<void> setStyle(PxStyle style) async {
+    _restyle(style);
+    notifyListeners();
+    await _prefs.setString('style', style.name);
   }
 
   Future<void> setPad(String layout) async {

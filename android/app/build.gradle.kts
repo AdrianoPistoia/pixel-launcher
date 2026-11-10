@@ -9,6 +9,9 @@ android {
     namespace = "com.adrip.pixel_launcher"
     compileSdk = flutter.compileSdkVersion
     ndkVersion = flutter.ndkVersion
+    // En el teléfono (arm64) no hay NDK que corra, y Flutter agrega un CMake vacío solo para forzar que
+    // se baje (lo usa para pelar símbolos). termux/setup.sh pone pixel.noNdk=true en ~/.gradle/gradle.properties.
+    if (providers.gradleProperty("pixel.noNdk").isPresent) externalNativeBuild.cmake.path = null
 
     compileOptions {
         sourceCompatibility = JavaVersion.VERSION_11
@@ -41,4 +44,10 @@ android {
 
 flutter {
     source = "../.."
+}
+
+// Shell nivel adb sin root (pestaña TERMINAL: ajustes, instalar APKs).
+dependencies {
+    implementation("dev.rikka.shizuku:api:13.1.5")
+    implementation("dev.rikka.shizuku:provider:13.1.5")
 }

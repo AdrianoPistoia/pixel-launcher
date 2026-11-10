@@ -6,6 +6,7 @@ import android.appwidget.AppWidgetHostView
 import android.appwidget.AppWidgetManager
 import android.content.Context
 import android.content.Intent
+import android.content.pm.PackageManager
 import android.net.Uri
 import android.os.Build
 import android.os.Bundle
@@ -17,6 +18,7 @@ import io.flutter.plugin.common.MethodChannel
 import io.flutter.plugin.common.StandardMessageCodec
 import io.flutter.plugin.platform.PlatformView
 import io.flutter.plugin.platform.PlatformViewFactory
+import rikka.shizuku.Shizuku
 import java.io.File
 
 class MainActivity : FlutterActivity() {
@@ -126,6 +128,68 @@ class MainActivity : FlutterActivity() {
                     host.deleteAppWidgetId(call.argument<Int>("id")!!)
                     result.success(null)
                 }
+                // Pestaña TERMINAL: corre bash de Termux con estos argumentos, en segundo plano o en una
+                // sesión visible. Requiere allow-external-apps=true en ~/.termux/termux.properties.
+                "termux" -> result.success(
+                    runCatching {
+                        startService(
+                            Intent("com.termux.RUN_COMMAND")
+                                .setClassName("com.termux", "com.termux.app.RunCommandService")
+                                .putExtra("com.termux.RUN_COMMAND_PATH", "$TERMUX/usr/bin/bash")
+                                .putExtra("com.termux.RUN_COMMAND_ARGUMENTS", call.argument<List<String>>("args")!!.toTypedArray())
+                                .putExtra("com.termux.RUN_COMMAND_WORKDIR", "$TERMUX/home")
+                                .putExtra("com.termux.RUN_COMMAND_BACKGROUND", call.argument<Boolean>("background") == true)
+                                .putExtra("com.termux.RUN_COMMAND_SESSION_ACTION", "0"), // la sesión nueva queda al frente
+                        )
+                        // Android 10+ no deja que el servicio de Termux abra su pantalla desde atrás (haría falta "Mostrar sobre otras apps"): la abrimos nosotros, que estamos al frente
+                        if (call.argument<Boolean>("background") != true) {
+                            startActivity(Intent().setClassName("com.termux", "com.termux.app.TermuxActivity").addFlags(Intent.FLAG_ACTIVITY_NEW_TASK))
+                        }
+                        null
+                    }.getOrElse { it.message ?: "no se pudo hablar con Termux" },
+                )
+                "termuxPermission" -> {
+                    if (checkSelfPermission(RUN_COMMAND) == PackageManager.PERMISSION_GRANTED) {
+                        result.success(true)
+                    } else {
+                        await(result)
+                        requestPermissions(arrayOf(RUN_COMMAND), TERMUX_PERMISSION)
+                    }
+                }
+                "shizukuPermission" -> when {
+                    !Shizuku.pingBinder() -> result.success(false)
+                    Shizuku.checkSelfPermission() == PackageManager.PERMISSION_GRANTED -> result.success(true)
+                    else -> {
+                        await(result)
+                        Shizuku.requestPermission(SHIZUKU_PERMISSION)
+                    }
+                }
+                // Comando como usuario shell (uid 2000) vía Shizuku. Devuelve {code, out, err}.
+                "shizuku" -> {
+                    if (!Shizuku.pingBinder() || Shizuku.checkSelfPermission() != PackageManager.PERMISSION_GRANTED) {
+                        return@setMethodCallHandler result.error("no-shizuku", "Shizuku no está corriendo o no dio permiso", null)
+                    }
+                    val cmd = call.argument<String>("cmd")!!
+                    Thread {
+                        val out = runCatching { shell(cmd) }
+                        runOnUiThread {
+                            out.fold({ result.success(it) }, { result.error("shizuku", it.message, null) })
+                        }
+                    }.start()
+                }
+                // Con Claude trabajando, servicio en primer plano: si Android mata al launcher, muere el MCP
+                // (permisos) y el turno se queda sin poder usar tools.
+                "keepAlive" -> {
+                    val i = Intent(this, KeepAlive::class.java)
+                    runCatching {
+                        when {
+                            call.arguments != true -> stopService(i)
+                            Build.VERSION.SDK_INT >= 26 -> startForegroundService(i)
+                            else -> startService(i)
+                        }
+                    }
+                    result.success(null)
+                }
                 else -> result.notImplemented()
             }
         }
@@ -174,6 +238,54 @@ class MainActivity : FlutterActivity() {
         }.start()
     }
 
+    private val shizukuListener = Shizuku.OnRequestPermissionResultListener { code, grant ->
+        if (code != SHIZUKU_PERMISSION) return@OnRequestPermissionResultListener
+        pending?.success(grant == PackageManager.PERMISSION_GRANTED)
+        pending = null
+    }
+
+    override fun onCreate(savedInstanceState: Bundle?) {
+        super.onCreate(savedInstanceState)
+        Shizuku.addRequestPermissionResultListener(shizukuListener)
+    }
+
+    override fun onDestroy() {
+        Shizuku.removeRequestPermissionResultListener(shizukuListener)
+        super.onDestroy()
+    }
+
+    override fun onRequestPermissionsResult(requestCode: Int, permissions: Array<out String>, grantResults: IntArray) {
+        super.onRequestPermissionsResult(requestCode, permissions, grantResults)
+        if (requestCode != TERMUX_PERMISSION) return
+        pending?.success(grantResults.firstOrNull() == PackageManager.PERMISSION_GRANTED)
+        pending = null
+    }
+
+    // ponytail: newProcess es privado desde la API 13 de Shizuku; si lo sacan, pasar a UserService.
+    private val newProcess by lazy {
+        Shizuku::class.java.getDeclaredMethod(
+            "newProcess", Array<String>::class.java, Array<String>::class.java, String::class.java,
+        ).apply { isAccessible = true }
+    }
+
+    private fun shell(cmd: String): Map<String, Any> {
+        val p = newProcess.invoke(null, arrayOf("sh", "-c", cmd), null, null) as Process
+        p.outputStream.close()
+        // stdout y stderr en paralelo: si uno se llena y nadie lo lee, el comando se traba
+        var out = ""
+        var err = ""
+        val readers = listOf(
+            Thread { out = p.inputStream.bufferedReader().readText() },
+            Thread { err = p.errorStream.bufferedReader().readText() },
+        ).onEach { it.start() }
+        // waitFor(timeout) de ShizukuRemoteProcess llama exitValue(), que por binder llega como IllegalArgumentException y no se atrapa
+        val killer = Thread { runCatching { Thread.sleep(5 * 60_000L); p.destroy() } }.apply { isDaemon = true; start() }
+        p.waitFor()
+        killer.interrupt()
+        readers.forEach { it.join(2000) }
+        return mapOf("code" to runCatching { p.exitValue() }.getOrDefault(-1), "out" to out, "err" to err)
+    }
+
     private fun widgetDone(ok: Boolean) {
         if (!ok) host.deleteAppWidgetId(widgetId)
         pending?.success(if (ok) widgetId else null)
@@ -185,5 +297,31 @@ class MainActivity : FlutterActivity() {
         const val DELETE_IMAGE = 2
         const val PICK_WIDGET = 3
         const val CONFIGURE_WIDGET = 4
+        const val TERMUX_PERMISSION = 5
+        const val SHIZUKU_PERMISSION = 6
+        const val RUN_COMMAND = "com.termux.permission.RUN_COMMAND"
+        const val TERMUX = "/data/data/com.termux/files"
+    }
+}
+
+/** Solo sube la prioridad del proceso (y muestra el aviso) mientras Claude tiene un turno en curso. */
+class KeepAlive : android.app.Service() {
+    override fun onBind(intent: Intent?): android.os.IBinder? = null
+
+    override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
+        val n = if (Build.VERSION.SDK_INT >= 26) {
+            getSystemService(android.app.NotificationManager::class.java).createNotificationChannel(
+                android.app.NotificationChannel("claude", "Claude trabajando", android.app.NotificationManager.IMPORTANCE_LOW),
+            )
+            android.app.Notification.Builder(this, "claude")
+        } else {
+            @Suppress("DEPRECATION") android.app.Notification.Builder(this)
+        }.setSmallIcon(R.mipmap.ic_launcher).setContentTitle("Claude está trabajando").setOngoing(true).build()
+        if (Build.VERSION.SDK_INT >= 34) {
+            startForeground(1, n, android.content.pm.ServiceInfo.FOREGROUND_SERVICE_TYPE_SPECIAL_USE)
+        } else {
+            startForeground(1, n)
+        }
+        return START_NOT_STICKY
     }
 }

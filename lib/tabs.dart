@@ -4,7 +4,9 @@ import 'dart:math';
 import 'package:flutter/material.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 
+import 'gu.dart';
 import 'pages.dart';
+import 'terminal.dart';
 import 'ui.dart';
 import 'utilities.dart';
 import 'views.dart';
@@ -14,10 +16,11 @@ import 'views.dart';
 final tabKinds = <String, ({String name, String about, Widget Function(int tab) page})>{
   'inicio': (name: 'INICIO', about: 'Inicio: apps fijadas', page: (_) => const PinnedPage()),
   'apps': (name: 'APPS', about: 'Apps: lista con búsqueda', page: (_) => const AppsPage()),
-  'terminal': (name: 'TERMINAL', about: 'Terminal: sugerencias y comandos', page: (_) => const TerminalPage()),
+  'terminal': (name: 'TERMINAL', about: 'Terminal: Claude Code y búsqueda', page: (i) => TerminalTab(i)),
   'bitacora': (name: 'BITÁCORA', about: 'Bitácora: lista A–Z tranquila', page: (_) => const BitacoraPage()),
   'consola': (name: 'CONSOLA', about: 'Consola: carrusel o grilla', page: (i) => ConsolaPage(i)),
   'orbita': (name: 'ÓRBITA', about: 'Órbita: apps según su uso', page: (_) => const OrbitaPage()),
+  'anillo': (name: 'ANILLO', about: 'Anillo: canales en órbita inclinada', page: (i) => RingPage(i)),
   'custom': (name: 'UTIL', about: 'Utilidades: hasta 4 widgets', page: (i) => CustomTabPage(i)),
 };
 
@@ -112,11 +115,28 @@ class TabStore extends ChangeNotifier {
     tabs = raw == null
         ? initialTabs(await _prefs.getString('tabs'))
         : List<Map<String, dynamic>>.from(jsonDecode(raw) as List);
-    for (final t in tabs) {
-      if (t['kind'] == 'custom') normalizeWidgets((t['widgets'] as List).cast<Config>());
-    }
+    _normalize();
     tabsBottom = await _prefs.getBool('tabsBottom') ?? false;
     notifyListeners();
+  }
+
+  void _normalize() {
+    for (final t in tabs) {
+      if (t['kind'] == 'custom') normalizeWidgets(((t['widgets'] ??= []) as List).cast<Config>());
+    }
+  }
+
+  /// Reemplaza todas las pestañas (tabs_set del MCP de Claude).
+  Future<void> replace(List<Map<String, dynamic>> all) {
+    tabs = all;
+    _normalize();
+    return save();
+  }
+
+  /// Cambia claves de la config de una pestaña (vista, sesión de TERMINAL…).
+  Future<void> setConfig(int tab, Map<String, dynamic> values) {
+    tabs[tab].addAll(values);
+    return save();
   }
 
   Future<void> save() async {
@@ -412,6 +432,8 @@ void showTabMenu(BuildContext context, int i, void Function(int tab) onOpen) {
     ),
     if (tabStore.tabs[i]['kind'] == 'consola')
       ('Vista: ${tabStore.tabs[i]['view'] == 'pano' ? 'panorámica' : 'carrusel'}', () => tabStore.toggleView(i)),
+    if (tabStore.tabs[i]['kind'] == 'terminal')
+      ('Vista: ${terminalViews[tabStore.tabs[i]['view']] ?? terminalViews['buscar']}', () => nextTerminalView(i)),
     if (i > 0) ('Mover antes', () => tabStore.moveTab(i, -1)),
     if (i < tabStore.tabs.length - 1) ('Mover después', () => tabStore.moveTab(i, 1)),
     ('Borrar', () => tabStore.removeTab(i)),

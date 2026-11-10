@@ -2,6 +2,8 @@ import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 
 import 'apps.dart';
+import 'claude.dart';
+import 'gu.dart';
 import 'pad.dart';
 import 'pages.dart';
 import 'tabs.dart';
@@ -9,10 +11,17 @@ import 'trinkets.dart';
 import 'utilities.dart';
 import 'ui.dart';
 
-void main() => runApp(
-  MaterialApp(
+void main() => runApp(const App());
+
+/// En un build y no en main: al cambiar de estilo se rearma y toma el tema nuevo.
+class App extends StatelessWidget {
+  const App({super.key});
+
+  @override
+  Widget build(BuildContext context) => MaterialApp(
     title: 'Pixel Launcher',
     debugShowCheckedModeBanner: false,
+    navigatorKey: navigatorKey, // para los pedidos de permiso de Claude (claude.dart)
     theme: Px.theme(),
     // por encima del Navigator: así los botones del mando también andan en los diálogos
     builder: (context, child) => ListenableBuilder(
@@ -20,8 +29,8 @@ void main() => runApp(
       builder: (_, _) => Shortcuts(shortcuts: padShortcuts(), child: child!),
     ),
     home: const Shell(),
-  ),
-);
+  );
+}
 
 /// La pantalla del launcher: trinkets, barra de pestañas y páginas.
 /// Las pestañas del usuario salen de [tabStore]; SYS y "+" siempre van al final y no se borran.
@@ -47,6 +56,7 @@ class _ShellState extends State<Shell> {
     _life = AppLifecycleListener(onResume: store.load);
     store.load();
     tabStore.load();
+    startMcp();
     HardwareKeyboard.instance.addHandler(_pad);
   }
 
@@ -139,16 +149,21 @@ class _ShellState extends State<Shell> {
       onPopInvokedWithResult: (_, _) => webFocus.value != null ? webFocus.value = null : go(0),
       child: Scaffold(
         resizeToAvoidBottomInset: false, // el teclado tapa, no achica el launcher
-        body: SafeArea(
-          child: Padding(
-            padding: const EdgeInsets.all(12),
-            child: Column(
-              crossAxisAlignment: CrossAxisAlignment.start,
-              children: tabStore.tabsBottom
-                  ? [const TrinketBar(), const SizedBox(height: 12), pages, const SizedBox(height: 12), bar]
-                  : [const TrinketBar(), const SizedBox(height: 12), bar, const SizedBox(height: 12), pages],
+        body: Stack(
+          children: [
+            if (Px.gu) const Positioned.fill(child: HexBackdrop()),
+            SafeArea(
+              child: Padding(
+                padding: const EdgeInsets.all(12),
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: tabStore.tabsBottom
+                      ? [const TrinketBar(), const SizedBox(height: 12), pages, const SizedBox(height: 12), bar]
+                      : [const TrinketBar(), const SizedBox(height: 12), bar, const SizedBox(height: 12), pages],
+                ),
+              ),
             ),
-          ),
+          ],
         ),
       ),
     );

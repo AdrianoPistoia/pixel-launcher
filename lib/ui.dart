@@ -2,42 +2,69 @@ import 'dart:typed_data';
 
 import 'package:flutter/material.dart';
 
-/// Sistema de diseño. Cambiá estos valores para re-skinear todo el launcher.
+/// Estilos del launcher: pixel-art o G.U. (navy, líneas cian, acentos ámbar, paneles biselados).
+enum PxStyle { pixel, gu }
+
+/// Sistema de diseño. Cambiá estos valores para re-skinear todo el launcher; cada uno tiene su
+/// versión pixel y G.U. según [style] (lo cambia `store.setStyle`).
 class Px {
-  static const bg = Color(0xFF14101E);
-  static const fg = Color(0xFFE8D9A8);
-  static const accent = Color(0xFF7BD389);
-  static const dim = Color(0xFF6B5E7A); // bordes y decoración
-  static const dimText = Color(0xFF9C90AC); // texto secundario (contraste suficiente sobre bg)
+  static var style = PxStyle.pixel;
+  static bool get gu => style == PxStyle.gu;
+
+  static Color get bg => gu ? const Color(0xFF070B14) : const Color(0xFF14101E);
+  static Color get fg => gu ? const Color(0xFFD6E8F5) : const Color(0xFFE8D9A8);
+  static Color get accent => gu ? const Color(0xFFF0913A) : const Color(0xFF7BD389);
+  static Color get dim => gu ? const Color(0xFF2E5A78) : const Color(0xFF6B5E7A); // bordes y decoración
+  static Color get dimText => gu ? const Color(0xFF7FA3BD) : const Color(0xFF9C90AC); // texto secundario
+  static Color get hi => gu ? const Color(0xFF39C7E8) : fg; // relleno de lo elegido
   static const shadow = Color(0xFF000000);
 
-  static const font = 'VT323';
+  static String get font => gu ? 'SpaceGrotesk' : 'VT323';
   static const unit = 2.0; // tamaño de un "pixel" de borde/sombra
   static const icon = 32.0; // tamaño en pantalla de los íconos
-  static const iconRes = 16; // resolución real: menor = más pixelado
+  static int get iconRes => gu ? 96 : 16; // resolución real: menor = más pixelado
   static const photoRes = 128; // ancho real de las fotos pixeladas
 
-  static const text = TextStyle(fontFamily: font, fontSize: 24, color: fg, height: 1);
-  static const big = TextStyle(fontFamily: font, fontSize: 40, color: fg, height: 1);
+  /// Tamaño de letra pensado para VT323, ajustado a la fuente del estilo (VT323 se ve más chica).
+  static double sz(double vt) => gu ? vt * 0.72 : vt;
 
-  /// Caja retro: bordes rectos y sombra dura sin blur.
-  static BoxDecoration box({bool active = false}) => BoxDecoration(
-    color: active ? fg : bg,
-    border: Border.all(color: active ? fg : dim, width: unit * 2),
-    boxShadow: const [BoxShadow(color: shadow, offset: Offset(unit * 2, unit * 2))],
+  static TextStyle get text => gu
+      ? TextStyle(fontFamily: font, fontSize: 17, color: fg, height: 1.15, letterSpacing: 0.6)
+      : TextStyle(fontFamily: font, fontSize: 24, color: fg, height: 1);
+  static TextStyle get big => gu
+      ? TextStyle(fontFamily: font, fontSize: 34, color: fg, height: 1, fontWeight: FontWeight.w300, letterSpacing: 2)
+      : TextStyle(fontFamily: font, fontSize: 40, color: fg, height: 1);
+
+  /// Borde de un panel: recto en pixel; en G.U. fino y con la esquina de abajo a la derecha biselada.
+  static ShapeBorder border(Color color) => gu
+      ? BeveledRectangleBorder(
+          side: BorderSide(color: color, width: 1.5),
+          borderRadius: const BorderRadius.only(bottomRight: Radius.circular(10)),
+        )
+      : RoundedRectangleBorder(
+          side: BorderSide(color: color, width: unit * 2),
+        );
+
+  /// Caja: en pixel, bordes rectos y sombra dura sin blur; en G.U., panel translúcido que brilla al elegirlo.
+  static ShapeDecoration box({bool active = false}) => ShapeDecoration(
+    color: active ? hi : (gu ? bg.withValues(alpha: 0.8) : bg),
+    shape: border(active ? hi : dim),
+    shadows: gu
+        ? [if (active) BoxShadow(color: hi.withValues(alpha: 0.45), blurRadius: 14)]
+        : const [BoxShadow(color: shadow, offset: Offset(unit * 2, unit * 2))],
   );
 
   static InputDecoration input(String hint) => InputDecoration(
     hintText: hint,
     hintStyle: text.copyWith(color: dim),
     isDense: true,
-    enabledBorder: const OutlineInputBorder(
+    enabledBorder: OutlineInputBorder(
       borderRadius: BorderRadius.zero,
       borderSide: BorderSide(color: dim, width: unit * 2),
     ),
-    focusedBorder: const OutlineInputBorder(
+    focusedBorder: OutlineInputBorder(
       borderRadius: BorderRadius.zero,
-      borderSide: BorderSide(color: fg, width: unit * 2),
+      borderSide: BorderSide(color: hi, width: unit * 2),
     ),
   );
 
@@ -46,9 +73,9 @@ class Px {
     scaffoldBackgroundColor: bg,
     fontFamily: font,
     splashFactory: NoSplash.splashFactory,
-    iconTheme: const IconThemeData(color: fg),
+    iconTheme: IconThemeData(color: fg),
     highlightColor: Colors.transparent,
-    textSelectionTheme: const TextSelectionThemeData(cursorColor: fg, selectionColor: dim),
+    textSelectionTheme: TextSelectionThemeData(cursorColor: fg, selectionColor: dim),
   );
 }
 
@@ -70,6 +97,7 @@ class PixelTile extends StatefulWidget {
     this.autofocus = false,
     this.vertical = false,
     this.match = '',
+    this.maxLines = 1,
   });
 
   final String label;
@@ -80,6 +108,7 @@ class PixelTile extends StatefulWidget {
   final bool autofocus;
   final bool vertical; // ícono arriba y texto abajo, centrado (para grillas)
   final String match; // parte del label a resaltar (sin importar mayúsculas), p. ej. lo que se buscó
+  final int? maxLines; // null = todas las que haga falta (mensajes largos)
 
   @override
   State<PixelTile> createState() => _PixelTileState();
@@ -104,14 +133,15 @@ class _PixelTileState extends State<PixelTile> {
                 // con el tile invertido el verde no se lee: subrayado
                 TextSpan(
                   text: name.substring(at, end),
-                  style: on ? const TextStyle(decoration: TextDecoration.underline) : const TextStyle(color: Px.accent),
+                  style: on ? const TextStyle(decoration: TextDecoration.underline) : TextStyle(color: Px.accent),
                 ),
                 TextSpan(text: name.substring(end)),
               ],
       ),
       style: Px.text.copyWith(color: on ? Px.bg : Px.fg),
-      maxLines: 1,
-      overflow: TextOverflow.ellipsis,
+      maxLines: widget.maxLines,
+      // ellipsis sin maxLines corta en la primera línea: con null, que haga todas las que necesite
+      overflow: widget.maxLines == null ? TextOverflow.clip : TextOverflow.ellipsis,
     );
     return FocusableActionDetector(
       autofocus: widget.autofocus,
@@ -222,7 +252,7 @@ class PixelIcon extends StatelessWidget {
           width: Px.icon,
           height: Px.icon,
           cacheWidth: Px.iconRes,
-          filterQuality: FilterQuality.none,
+          filterQuality: Px.gu ? FilterQuality.medium : FilterQuality.none,
           gaplessPlayback: true,
         );
 }
@@ -233,9 +263,7 @@ Future<T?> showPixelDialog<T>(BuildContext context, String title, Widget Functio
       context: context,
       builder: (ctx) => Dialog(
         backgroundColor: Px.bg,
-        shape: const RoundedRectangleBorder(
-          side: BorderSide(color: Px.fg, width: Px.unit * 2),
-        ),
+        shape: Px.border(Px.hi),
         child: SingleChildScrollView(
           // con el teclado abierto en horizontal queda muy poco alto
           padding: const EdgeInsets.all(12),

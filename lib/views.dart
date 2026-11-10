@@ -15,7 +15,10 @@ import 'utilities.dart';
 
 // Las cuatro vistas que salieron de las propuestas de UX: Terminal, Bitácora, Consola y Órbita.
 
-Widget _label(String text) => Text(text, style: Px.text.copyWith(fontSize: 18, color: Px.dimText, letterSpacing: 1));
+Widget _label(String text) => Text(
+  text,
+  style: Px.text.copyWith(fontSize: Px.sz(18), color: Px.dimText, letterSpacing: 1),
+);
 
 /// Inicial para agrupar y filtrar: sin tildes, '#' si no es letra.
 String initialOf(String name) {
@@ -28,7 +31,7 @@ String initialOf(String name) {
 
 // ─── Terminal ────────────────────────────────────────────────────────────────
 
-/// Terminal: apps sugeridas para esta hora, las fijadas y una línea de comandos.
+/// Vista "buscar" de la pestaña TERMINAL: apps sugeridas para esta hora, las fijadas y una línea de comandos.
 /// Escribir filtra apps (Enter abre la primera); `web <dirección>` abre una web.
 class TerminalPage extends StatefulWidget {
   const TerminalPage({super.key});
@@ -126,7 +129,7 @@ class _TerminalPageState extends State<TerminalPage> with TickerProviderStateMix
                         ),
                     ],
                   ),
-                  style: Px.text.copyWith(fontSize: 17, color: Px.dimText),
+                  style: Px.text.copyWith(fontSize: Px.sz(17), color: Px.dimText),
                   maxLines: 1,
                 );
               },
@@ -203,7 +206,7 @@ class _TerminalPageState extends State<TerminalPage> with TickerProviderStateMix
                   final n = (bar.value * 10).floor();
                   return Text(
                     '[${'#' * n}${'.' * (10 - n)}] ${loading!.name}',
-                    style: Px.text.copyWith(fontSize: 17, color: Px.accent),
+                    style: Px.text.copyWith(fontSize: Px.sz(17), color: Px.accent),
                     maxLines: 1,
                     overflow: TextOverflow.ellipsis,
                   );
@@ -212,7 +215,7 @@ class _TerminalPageState extends State<TerminalPage> with TickerProviderStateMix
             else
               Text(
                 'Enter abre la primera · web <dirección> abre una web',
-                style: Px.text.copyWith(fontSize: 17, color: Px.dimText),
+                style: Px.text.copyWith(fontSize: Px.sz(17), color: Px.dimText),
               ),
           ],
         ),
@@ -253,15 +256,15 @@ class _TerminalPageState extends State<TerminalPage> with TickerProviderStateMix
 
 // ─── Bitácora ────────────────────────────────────────────────────────────────
 
-TextStyle _sans(double size, {double weight = 400, Color color = Px.fg}) => TextStyle(
+TextStyle _sans(double size, {double weight = 400, Color? color}) => TextStyle(
   fontFamily: 'SpaceGrotesk',
   fontSize: size,
-  color: color,
+  color: color ?? Px.fg,
   fontVariations: [FontVariation('wght', weight)],
 );
 
-TextStyle _mono(double size, {Color color = Px.dimText}) =>
-    TextStyle(fontFamily: 'PlexMono', fontSize: size, color: color, letterSpacing: 1);
+TextStyle _mono(double size, {Color? color}) =>
+    TextStyle(fontFamily: 'PlexMono', fontSize: size, color: color ?? Px.dimText, letterSpacing: 1);
 
 String greeting(int hour) => hour < 6
     ? 'Buenas noches'
@@ -314,11 +317,11 @@ class _BitacoraPageState extends State<BitacoraPage> {
               hintText: 'Buscar apps',
               hintStyle: _mono(14),
               isDense: true,
-              enabledBorder: const OutlineInputBorder(
+              enabledBorder: OutlineInputBorder(
                 borderRadius: BorderRadius.zero,
                 borderSide: BorderSide(color: Px.dim, width: Px.unit),
               ),
-              focusedBorder: const OutlineInputBorder(
+              focusedBorder: OutlineInputBorder(
                 borderRadius: BorderRadius.zero,
                 borderSide: BorderSide(color: Px.fg, width: Px.unit),
               ),
@@ -374,7 +377,7 @@ class _BitacoraPageState extends State<BitacoraPage> {
         Expanded(
           child: Container(
             padding: const EdgeInsets.all(12),
-            decoration: const BoxDecoration(
+            decoration: BoxDecoration(
               color: Px.bg,
               border: Border.fromBorderSide(BorderSide(color: Px.dim, width: Px.unit)),
               boxShadow: [BoxShadow(color: Px.shadow, offset: Offset(3, 3))],
@@ -643,12 +646,15 @@ class _ConsolaPageState extends State<ConsolaPage> with SingleTickerProviderStat
   }
 
   // sin alignment: dentro de un Wrap, un Container alineado se estira a todo el ancho
-  Widget _key(String k, {Color color = Px.fg}) => Container(
+  Widget _key(String k, {Color? color}) => Container(
     padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
     decoration: BoxDecoration(
-      border: Border.all(color: color, width: Px.unit * 2),
+      border: Border.all(color: color ?? Px.fg, width: Px.unit * 2),
     ),
-    child: Text(k, style: Px.text.copyWith(fontSize: 20, color: color)),
+    child: Text(
+      k,
+      style: Px.text.copyWith(fontSize: Px.sz(20), color: color ?? Px.fg),
+    ),
   );
 
   @override
@@ -865,7 +871,7 @@ class _Blinds extends StatelessWidget {
                   child: FractionallySizedBox(
                     widthFactor: 1,
                     heightFactor: (((ms - i * 25) / 200).clamp(0.0, 1.0) * 4).floor() / 4,
-                    child: const ColoredBox(color: Px.fg),
+                    child: ColoredBox(color: Px.fg),
                   ),
                 ),
               ),
@@ -972,7 +978,7 @@ class _OrbitaPageState extends State<OrbitaPage> with SingleTickerProviderStateM
               Expanded(
                 child: Text(
                   'más cerca de la luna = más usada',
-                  style: Px.text.copyWith(fontSize: 18, color: Px.dimText),
+                  style: Px.text.copyWith(fontSize: Px.sz(18), color: Px.dimText),
                 ),
               ),
               PixelTile(label: 'CAPA ${l + 1}/$layers', onTap: () => setState(() => layer = (l + 1) % layers)),
@@ -989,7 +995,7 @@ class _OrbitaPageState extends State<OrbitaPage> with SingleTickerProviderStateM
           Text(
             'tocá una app, o mantené la luna y arrastrá',
             textAlign: TextAlign.center,
-            style: Px.text.copyWith(fontSize: 18, color: Px.dimText),
+            style: Px.text.copyWith(fontSize: Px.sz(18), color: Px.dimText),
           ),
           const SizedBox(height: 8),
           SizedBox(
@@ -1118,7 +1124,7 @@ class _OrbitaPageState extends State<OrbitaPage> with SingleTickerProviderStateM
                 textAlign: TextAlign.center,
                 maxLines: 1,
                 overflow: TextOverflow.ellipsis,
-                style: Px.text.copyWith(fontSize: 16),
+                style: Px.text.copyWith(fontSize: Px.sz(16)),
               ),
             ),
         ],

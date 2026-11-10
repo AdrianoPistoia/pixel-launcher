@@ -7,6 +7,7 @@ import 'package:flutter/services.dart';
 import 'package:installed_apps/installed_apps.dart';
 
 import 'apps.dart';
+import 'gu.dart';
 import 'pad.dart';
 import 'tabs.dart';
 import 'ui.dart';
@@ -131,54 +132,75 @@ class SystemPage extends StatelessWidget {
   const SystemPage({super.key});
 
   @override
-  Widget build(BuildContext context) => ListView(
-    children: [
-      PixelTile(
-        autofocus: true,
-        label: 'Elegir launcher por defecto',
-        onTap: () => const AndroidIntent(action: 'android.settings.HOME_SETTINGS').launch(),
-      ),
-      const SizedBox(height: 4),
-      PixelTile(
-        label: 'Ajustes de Android',
-        onTap: () => const AndroidIntent(action: 'android.settings.SETTINGS').launch(),
-      ),
-      const SizedBox(height: 4),
-      ListenableBuilder(
-        listenable: store,
-        builder: (context, _) {
-          final name = store.apps.where((a) => a.packageName == store.browser).firstOrNull?.name;
-          return PixelTile(
-            label: 'Navegador: ${name ?? 'del sistema'}',
-            onTap: () => showPixelMenu(context, 'Navegador para webs', [
-              ('Del sistema', () => store.setBrowser(null)),
-              for (final a in store.apps) (a.name, () => store.setBrowser(a.packageName)),
+  Widget build(BuildContext context) {
+    final menu = ListView(
+      children: [
+        PixelTile(
+          autofocus: true,
+          label: 'Elegir launcher por defecto',
+          onTap: () => const AndroidIntent(action: 'android.settings.HOME_SETTINGS').launch(),
+        ),
+        const SizedBox(height: 4),
+        PixelTile(
+          label: 'Ajustes de Android',
+          onTap: () => const AndroidIntent(action: 'android.settings.SETTINGS').launch(),
+        ),
+        const SizedBox(height: 4),
+        ListenableBuilder(
+          listenable: store,
+          builder: (context, _) {
+            final name = store.apps.where((a) => a.packageName == store.browser).firstOrNull?.name;
+            return PixelTile(
+              label: 'Navegador: ${name ?? 'del sistema'}',
+              onTap: () => showPixelMenu(context, 'Navegador para webs', [
+                ('Del sistema', () => store.setBrowser(null)),
+                for (final a in store.apps) (a.name, () => store.setBrowser(a.packageName)),
+              ]),
+            );
+          },
+        ),
+        const SizedBox(height: 4),
+        ListenableBuilder(
+          listenable: store,
+          builder: (context, _) => PixelTile(
+            label: 'Mando: ${padLayouts[store.pad]?.name ?? store.pad}',
+            onTap: () => showPixelMenu(context, 'Mando (en Nintendo confirma el botón de la derecha)', [
+              for (final MapEntry(key: k, value: l) in padLayouts.entries) (l.name, () => store.setPad(k)),
             ]),
-          );
-        },
-      ),
-      const SizedBox(height: 4),
-      ListenableBuilder(
-        listenable: store,
-        builder: (context, _) => PixelTile(
-          label: 'Mando: ${padLayouts[store.pad]?.name ?? store.pad}',
-          onTap: () => showPixelMenu(context, 'Mando (en Nintendo confirma el botón de la derecha)', [
-            for (final MapEntry(key: k, value: l) in padLayouts.entries) (l.name, () => store.setPad(k)),
-          ]),
+          ),
         ),
-      ),
-      const SizedBox(height: 4),
-      ListenableBuilder(
-        listenable: tabStore,
-        builder: (context, _) => PixelTile(
-          label: 'Pestañas: ${tabStore.tabsBottom ? 'abajo' : 'arriba'}',
-          onTap: () => tabStore.setTabsBottom(!tabStore.tabsBottom),
+        const SizedBox(height: 4),
+        ListenableBuilder(
+          listenable: tabStore,
+          builder: (context, _) => PixelTile(
+            label: 'Pestañas: ${tabStore.tabsBottom ? 'abajo' : 'arriba'}',
+            onTap: () => tabStore.setTabsBottom(!tabStore.tabsBottom),
+          ),
         ),
-      ),
-      const SizedBox(height: 4),
-      PixelTile(label: 'Copiar datos de uso', onTap: copyUsage),
-      const SizedBox(height: 16),
-      Text('PIXEL LAUNCHER v0.2', style: Px.text.copyWith(color: Px.dimText)),
-    ],
-  );
+        const SizedBox(height: 4),
+        ListenableBuilder(
+          listenable: store,
+          builder: (context, _) => PixelTile(
+            label: 'Estilo: ${Px.gu ? 'G.U.' : 'pixel'}',
+            onTap: () => store.setStyle(Px.gu ? PxStyle.pixel : PxStyle.gu),
+          ),
+        ),
+        const SizedBox(height: 4),
+        PixelTile(label: 'Copiar datos de uso', onTap: copyUsage),
+        const SizedBox(height: 16),
+        Text('PIXEL LAUNCHER v0.2', style: Px.text.copyWith(color: Px.dimText)),
+      ],
+    );
+    if (!Px.gu) return menu;
+    // G.U.: la espada cruza de fondo y el menú se corre a la derecha para dejarla ver
+    return Stack(
+      children: [
+        const Positioned.fill(child: SwordBackdrop()),
+        Align(
+          alignment: Alignment.centerRight,
+          child: FractionallySizedBox(widthFactor: 0.78, child: menu),
+        ),
+      ],
+    );
+  }
 }

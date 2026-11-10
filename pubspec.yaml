@@ -20,6 +20,8 @@ dev_dependencies:
   flutter_lints: ^5.0.0
 
 flutter:
+  assets:
+    - termux/ # scripts y puente que se mandan a Termux (docs/terminal.md)
   fonts:
     - family: VT323
       fonts:
