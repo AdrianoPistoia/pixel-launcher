@@ -119,4 +119,15 @@ void main() {
       startsWith('— detenido · 1.5 s'),
     );
   });
+
+  test('markdown: bloques de código aparte (también sin cerrar) y formato de línea', () {
+    expect(mdBlocks('Corré:\n\n```bash\ngh auth login\n```\n\nY avisame.'), [
+      (false, 'Corré:'),
+      (true, 'gh auth login'),
+      (false, 'Y avisame.'),
+    ]);
+    expect(mdBlocks('Va:\n```\nnpm i'), [(false, 'Va:'), (true, 'npm i')]);
+    expect(mdLine('## Qué hago').toPlainText(), 'Qué hago');
+    expect(mdLine('- **Uno** con `x`').toPlainText(), '• Uno con x');
+  });
 }

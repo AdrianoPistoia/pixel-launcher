@@ -28,6 +28,9 @@ class Px {
   /// Tamaño de letra pensado para VT323, ajustado a la fuente del estilo (VT323 se ve más chica).
   static double sz(double vt) => gu ? vt * 0.72 : vt;
 
+  /// Código (bloques del chat de Claude): VT323 ya es monoespaciada; Space Grotesk no.
+  static TextStyle get code => text.copyWith(fontFamily: gu ? 'monospace' : font, fontSize: sz(18));
+
   static TextStyle get text => gu
       ? TextStyle(fontFamily: font, fontSize: 17, color: fg, height: 1.15, letterSpacing: 0.6)
       : TextStyle(fontFamily: font, fontSize: 24, color: fg, height: 1);

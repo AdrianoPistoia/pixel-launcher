@@ -94,6 +94,44 @@ Line _result(Map ev) {
   );
 }
 
+/// Parte un texto markdown en prosa y bloques de código (```): (esCódigo, texto). Un bloque sin
+/// cerrar (respuesta a medio llegar) es código igual.
+List<(bool, String)> mdBlocks(String md) {
+  final out = <(bool, String)>[];
+  final parts = md.split(RegExp(r'^ *```[^\n]*\n?', multiLine: true));
+  for (final (i, p) in parts.indexed) {
+    final t = i.isOdd ? p.replaceFirst(RegExp(r'\n$'), '') : p.trim();
+    if (t.isNotEmpty) out.add((i.isOdd, t));
+  }
+  return out;
+}
+
+/// Una línea de prosa: títulos (#), viñetas (- / *), **negrita** y `código` en color.
+TextSpan mdLine(String line) {
+  final h = RegExp(r'^#{1,6} +').firstMatch(line);
+  if (h != null) return TextSpan(text: line.substring(h.end), style: TextStyle(color: Px.accent));
+  final text = line.replaceFirstMapped(RegExp(r'^( *)[-*] +'), (m) => '${m[1]}• ');
+  final spans = <TextSpan>[];
+  var at = 0;
+  for (final m in RegExp(r'\*\*(.+?)\*\*|`([^`]+)`').allMatches(text)) {
+    spans
+      ..add(TextSpan(text: text.substring(at, m.start)))
+      ..add(
+        TextSpan(
+          text: m[1] ?? m[2],
+          style: TextStyle(color: m[1] != null ? Px.accent : Px.dimText),
+        ),
+      );
+    at = m.end;
+  }
+  return TextSpan(
+    children: [
+      ...spans,
+      TextSpan(text: text.substring(at)),
+    ],
+  );
+}
+
 /// Sobre qué actúa una tool, en una línea: archivo, comando, patrón, dirección…
 String _target(Object? input) {
   if (input is! Map) return '';
@@ -261,6 +299,47 @@ class _TerminalTabState extends State<TerminalTab> {
     ],
   );
 
+  /// Respuesta de Claude: prosa con formato y bloques de código en recuadro, con COPIAR adentro.
+  Widget _markdown(String md) => Column(
+    crossAxisAlignment: CrossAxisAlignment.stretch,
+    children: [
+      for (final (code, t) in mdBlocks(md))
+        code
+            ? Container(
+                margin: const EdgeInsets.symmetric(vertical: 4),
+                padding: const EdgeInsets.all(8),
+                decoration: Px.box(),
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.stretch,
+                  children: [
+                    Align(
+                      alignment: Alignment.centerRight,
+                      child: PixelTile(
+                        label: 'COPIAR',
+                        // Android 13+ ya avisa que se copió
+                        onTap: () => Clipboard.setData(ClipboardData(text: t)),
+                      ),
+                    ),
+                    const SizedBox(height: 4),
+                    // largo: se desliza de costado en vez de partir los comandos
+                    SingleChildScrollView(
+                      scrollDirection: Axis.horizontal,
+                      child: Text(t, style: Px.code),
+                    ),
+                  ],
+                ),
+              )
+            : Text.rich(
+                TextSpan(
+                  children: [
+                    for (final (i, l) in t.split('\n').indexed) ...[if (i > 0) const TextSpan(text: '\n'), mdLine(l)],
+                  ],
+                ),
+                style: Px.text,
+              ),
+    ],
+  );
+
   /// Comando y salida completos de una tool (o el texto de un aviso).
   void _detail(String title, String text) => showPixelDialog(
     context,
@@ -323,7 +402,7 @@ class _TerminalTabState extends State<TerminalTab> {
                   builder: (ctx) => Container(
                     padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
                     decoration: Focus.of(ctx).hasFocus ? Px.box() : null,
-                    child: Text(t, style: Px.text),
+                    child: _markdown(t),
                   ),
                 ),
               ),
