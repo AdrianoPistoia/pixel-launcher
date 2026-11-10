@@ -26,7 +26,7 @@ in_debian '
 set -e
 export DEBIAN_FRONTEND=noninteractive
 apt-get update
-apt-get install -y nodejs git curl ca-certificates ripgrep unzip xz-utils
+apt-get install -y nodejs git curl ca-certificates ripgrep unzip xz-utils gh
 command -v claude >/dev/null || [ -x ~/.local/bin/claude ] || curl -fsSL https://claude.ai/install.sh | bash
 # el puente y "claude" sin login shell no ven ~/.local/bin
 ln -sf ~/.local/bin/claude /usr/local/bin/claude

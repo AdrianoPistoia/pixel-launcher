@@ -116,9 +116,10 @@ proceso y la historia viven en el puente; la pestaña solo recuerda cuál mirar.
 
 ## Ciclo completo: compilar el launcher en el teléfono
 
-El repo no tiene remoto: para tenerlo en el teléfono, desde la PC
-`git bundle create launcher.bundle --all && adb push launcher.bundle /sdcard/Download/`, y en una sesión
-de Claude con carpeta `/root/launcher`: "cloná /sdcard/Download/launcher.bundle acá". Después, por ejemplo:
+El repo está en GitHub (privado): `AdrianoPistoia/pixel-launcher`, rama `main`. Una vez, en Termux:
+`proot-distro login debian -- bash -c 'gh auth login -h github.com -p https -w && gh auth setup-git'`
+(muestra un código: abrilo en github.com/login/device). Después, en una sesión de Claude con carpeta `/root`:
+"cloná AdrianoPistoia/pixel-launcher en /root/launcher". Por ejemplo:
 "cambiá X, compilá con `flutter build apk --debug --split-per-abi --target-platform android-arm64`,
 copiá `build/app/outputs/flutter-apk/app-arm64-v8a-debug.apk` a /sdcard/Download/ e instalalo".
 **Siempre `--split-per-abi`, en la PC y en el teléfono:** suma 2000 al versionCode en arm64 (2002). Un build
