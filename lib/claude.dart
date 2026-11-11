@@ -92,6 +92,33 @@ Future<List<Attachment>> pickAttachments() async {
   return all.where((a) => a.size <= Attachment.maxBytes).toList();
 }
 
+// ─── Uso del plan ────────────────────────────────────────────────────────────
+
+/// Última info de límite para "five_hour", "seven_day" o "fable" (cualquier tipo que lo mencione).
+Map<String, dynamic>? usageOf(Map<String, Map<String, dynamic>> usage, String which) => which == 'fable'
+    ? usage.entries.where((e) => e.key.toLowerCase().contains('fable')).map((e) => e.value).firstOrNull
+    : usage[which];
+
+/// Porcentaje usado (0–100) si Claude lo informó; acepta fracción (0–1) o porcentaje.
+double? usagePct(Map info) {
+  final u = info['utilization'];
+  return u is num ? (u <= 1 ? u * 100 : u).toDouble().clamp(0, 100) : null;
+}
+
+/// "en 2 h 5 min" hasta `resetsAt` (segundos o milisegundos desde 1970); null si no vino.
+String? usageReset(Map info, DateTime now) {
+  final r = info['resetsAt'];
+  if (r is! num) return null;
+  final at = DateTime.fromMillisecondsSinceEpoch((r > 1e12 ? r : r * 1000).toInt());
+  final m = at.difference(now).inMinutes;
+  if (m <= 0) return 'ya se reinició';
+  return m >= 1440
+      ? 'en ${m ~/ 1440} d ${m % 1440 ~/ 60} h'
+      : m >= 60
+      ? 'en ${m ~/ 60} h ${m % 60} min'
+      : 'en $m min';
+}
+
 // ─── Puente ──────────────────────────────────────────────────────────────────
 
 /// Conexión con `bridge.js`: NDJSON por TCP. Las sesiones y sus eventos viven acá y no en la
@@ -112,6 +139,7 @@ class Bridge extends ChangeNotifier {
   List<Map<String, dynamic>> sessions = [];
   final events = <String, List<Map<String, dynamic>>>{}; // id → eventos de stream-json
   final busy = <String>{}; // sesiones con un turno en curso
+  final usage = <String, Map<String, dynamic>>{}; // último rate_limit_info por rateLimitType (five_hour, seven_day…)
   final approvedTurn = <String>{}; // sesiones con lo de bajo riesgo aprobado hasta el próximo mensaje
   final _open = <String, String>{}; // suscripciones id → cwd; se renuevan al reconectar
   String? status; // último aviso o error, para mostrar en la pestaña
@@ -189,6 +217,10 @@ class Bridge extends ChangeNotifier {
       case 'event':
         final ev = m['event'] as Map<String, dynamic>;
         (events[id!] ??= []).add(ev);
+        if (ev['type'] == 'rate_limit_event' && ev['rate_limit_info'] is Map) {
+          final i = Map<String, dynamic>.from(ev['rate_limit_info'] as Map);
+          usage['${i['rateLimitType'] ?? 'unknown'}'] = i..['seen'] = DateTime.now().millisecondsSinceEpoch;
+        }
         if (ev['type'] == 'result') busy.remove(id);
         if (ev['type'] == 'system' && ev['subtype'] == 'init') busy.add(id);
       case 'exit':
@@ -498,6 +530,71 @@ Future<String> _setTabs(Object? tabs) async {
   return 'Listo: ${tabs.length} pestañas.';
 }
 
+/// Pregunta de Claude (AskUserQuestion): burbuja con opciones numeradas y «Otro…».
+/// Con 1–9 se elige por número. Devuelve la respuesta (varias separadas por coma si es múltiple), o null si se descarta.
+Future<String?> askClaude(BuildContext ctx, Map q) {
+  final opts = [
+    for (final o in (q['options'] as List? ?? const []))
+      if (o is Map) ('${o['label']}', '${o['description'] ?? ''}'),
+  ];
+  final multi = q['multiSelect'] == true;
+  final chosen = <String>[];
+  return showPixelDialog<String>(
+    ctx,
+    '${q['header'] ?? 'Claude pregunta'}',
+    (c) => StatefulBuilder(
+      builder: (c, setLocal) {
+        void pick(String label) {
+          if (!multi) return Navigator.pop(c, label);
+          setLocal(() => chosen.contains(label) ? chosen.remove(label) : chosen.add(label));
+        }
+
+        Future<void> other() async {
+          final t = (await askText(c, 'Otro'))?.trim();
+          if (t == null || t.isEmpty || !c.mounted) return;
+          pick(t);
+        }
+
+        return Focus(
+          onKeyEvent: (_, e) {
+            final n = e is KeyDownEvent ? int.tryParse(e.character ?? '') : null;
+            if (n == null || n < 1 || n > opts.length + 1) return KeyEventResult.ignored;
+            n <= opts.length ? pick(opts[n - 1].$1) : other();
+            return KeyEventResult.handled;
+          },
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            crossAxisAlignment: CrossAxisAlignment.stretch,
+            children: [
+              Text('${q['question']}', style: Px.text),
+              const SizedBox(height: 8),
+              for (final (i, (label, desc)) in opts.indexed)
+                Padding(
+                  padding: const EdgeInsets.only(bottom: 4),
+                  child: PixelTile(
+                    autofocus: i == 0,
+                    maxLines: 3,
+                    selected: chosen.contains(label),
+                    label: '${i + 1}  $label${desc.isEmpty ? '' : '\n$desc'}',
+                    onTap: () => pick(label),
+                  ),
+                ),
+              PixelTile(label: '${opts.length + 1}  Otro…', onTap: other),
+              if (multi) ...[
+                const SizedBox(height: 4),
+                PixelTile(
+                  label: 'LISTO (${chosen.length})',
+                  onTap: chosen.isEmpty ? null : () => Navigator.pop(c, chosen.join(', ')),
+                ),
+              ],
+            ],
+          ),
+        );
+      },
+    ),
+  );
+}
+
 /// El pedido de permiso de Claude: según la política, deja pasar o pregunta con un diálogo pixel.
 /// El puente pone la sesión y su carpeta en la URL del MCP (`/mcp?session=…&cwd=…`).
 Future<String> _approve(Map args, Uri from) async {
@@ -505,6 +602,20 @@ Future<String> _approve(Map args, Uri from) async {
   final input = (args['input'] as Map?) ?? {};
   final id = from.queryParameters['session'];
   final cwd = from.queryParameters['cwd'] ?? bridge.cwdOf(id) ?? '';
+  if (bareTool(tool) == 'AskUserQuestion') {
+    // no es un permiso: es Claude preguntando. Se responde en `answers` por texto de pregunta.
+    final answers = <String, String>{};
+    for (final q in (input['questions'] as List? ?? const []).whereType<Map>()) {
+      final ctx = navigatorKey.currentContext;
+      final a = ctx == null ? null : await askClaude(ctx, q);
+      if (a == null) return jsonEncode({'behavior': 'deny', 'message': 'El usuario no respondió la pregunta.'});
+      answers['${q['question']}'] = a;
+    }
+    return jsonEncode({
+      'behavior': 'allow',
+      'updatedInput': {...input, 'answers': answers},
+    });
+  }
   final ask = decide(tool, input, cwd, turnApproved: bridge.approvedTurn.contains(id));
   // modo AUTO de la pestaña que muestra esta sesión: todo permitido, sin preguntar
   final auto = tabStore.tabs.any((t) => t['session'] == id && t['auto'] == true);

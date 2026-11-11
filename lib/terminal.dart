@@ -69,6 +69,19 @@ List<Line> chatLines(List<Map> events, String cwd) {
   ];
 }
 
+/// Lista de tareas de Claude: el último TodoWrite de la sesión, [{content, status, activeForm}].
+List<Map> latestTodos(List<Map> events) {
+  for (final ev in events.reversed) {
+    for (final b in blocksOf(ev).toList().reversed) {
+      if (b['type'] != 'tool_use' || b['name'] != 'TodoWrite') continue;
+      final input = b['input'];
+      final todos = input is Map ? input['todos'] : null;
+      if (todos is List) return todos.whereType<Map>().toList();
+    }
+  }
+  return const [];
+}
+
 Line _tool(Map b, Map? r, String Function(String) rel) {
   final input = b['input'] is Map ? b['input'] as Map : const {};
   final mark = r == null ? '~' : (r['is_error'] == true ? '!' : '>');
@@ -161,6 +174,7 @@ class TerminalTab extends StatefulWidget {
 class _TerminalTabState extends State<TerminalTab> {
   final scroll = ScrollController();
   int seen = 0; // eventos ya mostrados: si llegan más, baja al final
+  bool todosOpen = true; // el panel de tareas del chat, desplegado o solo la barra
   bool showSteps = false; // los pasos de instalación con el puente andando (LOGIN, Shizuku…)
 
   @override
@@ -267,6 +281,184 @@ class _TerminalTabState extends State<TerminalTab> {
         const SizedBox(height: 8),
         if (bridge.status != null) Text(bridge.status!, style: Px.text.copyWith(color: Px.accent)),
       ],
+    );
+  }
+
+  static const _todoStatus = {'completed': 'hecha', 'in_progress': 'en curso', 'pending': 'pendiente'};
+
+  /// Tareas de Claude (TodoWrite): barra de avance y pasos en línea de tiempo; tocar uno abre su detalle.
+  Widget _todos(List<Map> todos) {
+    final done = todos.where((t) => t['status'] == 'completed').length;
+    return Container(
+      margin: const EdgeInsets.only(bottom: 8, right: Px.unit * 2),
+      padding: const EdgeInsets.all(8),
+      decoration: Px.box(),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.stretch,
+        children: [
+          PixelTile(
+            label: 'TAREAS $done/${todos.length} ${todosOpen ? '-' : '+'}',
+            onTap: () => setState(() => todosOpen = !todosOpen),
+          ),
+          const SizedBox(height: 6),
+          Container(
+            height: 16,
+            padding: const EdgeInsets.all(Px.unit),
+            decoration: BoxDecoration(
+              border: Border.all(color: Px.dim, width: Px.unit * 2),
+            ),
+            child: Align(
+              alignment: Alignment.centerLeft,
+              child: FractionallySizedBox(
+                widthFactor: done / todos.length,
+                heightFactor: 1,
+                child: ColoredBox(color: Px.accent),
+              ),
+            ),
+          ),
+          if (todosOpen) ...[
+            const SizedBox(height: 6),
+            ConstrainedBox(
+              constraints: const BoxConstraints(maxHeight: 180),
+              child: ListView(
+                shrinkWrap: true,
+                children: [
+                  for (final (i, t) in todos.indexed)
+                    IntrinsicHeight(
+                      child: Row(
+                        crossAxisAlignment: CrossAxisAlignment.stretch,
+                        children: [
+                          SizedBox(
+                            width: 22,
+                            child: Column(
+                              children: [
+                                Container(
+                                  width: 14,
+                                  height: 14,
+                                  margin: const EdgeInsets.only(top: 6),
+                                  decoration: BoxDecoration(
+                                    color: t['status'] == 'completed' ? Px.accent : Px.bg,
+                                    border: Border.all(
+                                      color: switch (t['status']) {
+                                        'completed' => Px.accent,
+                                        'in_progress' => Px.hi,
+                                        _ => Px.dim,
+                                      },
+                                      width: Px.unit * 2,
+                                    ),
+                                  ),
+                                ),
+                                if (i < todos.length - 1)
+                                  Expanded(
+                                    child: Container(
+                                      width: Px.unit * 2,
+                                      color: t['status'] == 'completed' ? Px.accent : Px.dim,
+                                    ),
+                                  ),
+                              ],
+                            ),
+                          ),
+                          Expanded(
+                            child: Padding(
+                              padding: const EdgeInsets.only(bottom: 4),
+                              child: PixelTile(
+                                maxLines: 2,
+                                selected: t['status'] == 'in_progress',
+                                label: '${t['status'] == 'in_progress' ? (t['activeForm'] ?? t['content']) : t['content']}',
+                                onTap: () => _todoDetail(i, todos),
+                              ),
+                            ),
+                          ),
+                        ],
+                      ),
+                    ),
+                ],
+              ),
+            ),
+          ],
+        ],
+      ),
+    );
+  }
+
+  void _todoDetail(int i, List<Map> todos) {
+    final t = todos[i];
+    showPixelDialog<void>(
+      context,
+      'Tarea ${i + 1} de ${todos.length}',
+      (c) => Column(
+        mainAxisSize: MainAxisSize.min,
+        crossAxisAlignment: CrossAxisAlignment.stretch,
+        children: [
+          Text('${t['content']}', style: Px.text),
+          const SizedBox(height: 8),
+          _hint('Estado: ${_todoStatus[t['status']] ?? t['status']}'),
+          if (t['activeForm'] != null && t['activeForm'] != t['content']) _hint('Mientras corre: ${t['activeForm']}'),
+          const SizedBox(height: 8),
+          PixelTile(autofocus: true, label: 'OK', onTap: () => Navigator.pop(c)),
+        ],
+      ),
+    );
+  }
+
+  /// Uso del plan: 5 horas, semanal y Fable. Claude Code informa el límite (`rate_limit_event`) mientras
+  /// trabaja, así que se muestra lo último que llegó; se actualiza solo si Claude responde con el diálogo abierto.
+  void _usage() => showPixelDialog<void>(
+    context,
+    'Uso del plan',
+    (c) => ListenableBuilder(
+      listenable: bridge,
+      builder: (c, _) => Column(
+        mainAxisSize: MainAxisSize.min,
+        crossAxisAlignment: CrossAxisAlignment.stretch,
+        children: [
+          for (final (name, key) in const [('Últimas 5 horas', 'five_hour'), ('Semanal', 'seven_day'), ('Fable', 'fable')])
+            _usageRow(name, usageOf(bridge.usage, key)),
+          _hint('Se actualiza cuando Claude responde. Sin datos = todavía no mandó el aviso de límite.'),
+          const SizedBox(height: 8),
+          PixelTile(autofocus: true, label: 'CERRAR', onTap: () => Navigator.pop(c)),
+        ],
+      ),
+    ),
+  );
+
+  Widget _usageRow(String name, Map<String, dynamic>? info) {
+    final pct = info == null ? null : usagePct(info);
+    final reset = info == null ? null : usageReset(info, DateTime.now());
+    return Padding(
+      padding: const EdgeInsets.only(bottom: 10),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.stretch,
+        children: [
+          Row(
+            children: [
+              Expanded(child: Text(name, style: Px.text)),
+              Text(
+                info == null ? 'sin datos' : (pct == null ? '${info['status'] ?? '?'}' : '${pct.round()}%'),
+                style: Px.text.copyWith(color: Px.accent),
+              ),
+            ],
+          ),
+          if (pct != null)
+            Container(
+              height: 16,
+              margin: const EdgeInsets.symmetric(vertical: 4),
+              padding: const EdgeInsets.all(Px.unit),
+              decoration: BoxDecoration(
+                border: Border.all(color: Px.dim, width: Px.unit * 2),
+              ),
+              child: Align(
+                alignment: Alignment.centerLeft,
+                child: FractionallySizedBox(
+                  widthFactor: pct / 100,
+                  heightFactor: 1,
+                  child: ColoredBox(color: pct > 85 ? Colors.redAccent : (pct > 60 ? Colors.amber : Px.accent)),
+                ),
+              ),
+            ),
+          if (reset != null) _hint('se reinicia $reset'),
+        ],
+      ),
     );
   }
 
@@ -416,6 +608,7 @@ class _TerminalTabState extends State<TerminalTab> {
     bridge.open(id, cwd); // una vez por conexión; no notifica
     final events = bridge.events[id] ?? [];
     final lines = chatLines(events, cwd);
+    final todos = latestTodos(events);
     final auto = tabStore.tabs[widget.tab]['auto'] == true;
     if (events.length != seen) {
       seen = events.length;
@@ -439,6 +632,7 @@ class _TerminalTabState extends State<TerminalTab> {
           ],
         ),
         const SizedBox(height: 8),
+        if (todos.isNotEmpty) _todos(todos),
         Expanded(
           child: ListView.separated(
             controller: scroll,
@@ -489,6 +683,7 @@ class _TerminalTabState extends State<TerminalTab> {
               },
             ),
             if (bridge.busy.contains(id)) PixelTile(label: 'DETENER', onTap: () => bridge.stop(id)),
+            PixelTile(label: 'USO', onTap: _usage),
             // modo auto: el MCP permite todo sin preguntar (incluye instalar apps y Shizuku)
             PixelTile(label: auto ? 'AUTO: SÍ' : 'AUTO: NO', selected: auto, onTap: () => set({'auto': !auto})),
               ],

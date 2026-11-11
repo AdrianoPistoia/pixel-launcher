@@ -130,4 +130,38 @@ void main() {
     expect(mdLine('## Qué hago').toPlainText(), 'Qué hago');
     expect(mdLine('- **Uno** con `x`').toPlainText(), '• Uno con x');
   });
+
+  test('tareas: el último TodoWrite manda', () {
+    Map todo(List<Map> t) => {
+      'type': 'assistant',
+      'message': {
+        'content': [
+          {'type': 'tool_use', 'id': 'x', 'name': 'TodoWrite', 'input': {'todos': t}},
+        ],
+      },
+    };
+    final a = {'content': 'Uno', 'status': 'pending'};
+    final b = {'content': 'Uno', 'status': 'completed'};
+    expect(latestTodos([todo([a]), {'type': 'result'}, todo([b])]), [b]);
+    expect(latestTodos([{'type': 'result'}]), isEmpty);
+  });
+
+  test('uso: 5 horas, semanal y Fable salen del último rate_limit_info', () {
+    final u = {
+      'five_hour': {'utilization': 0.42, 'resetsAt': 1000},
+      'seven_day_fable': {'utilization': 80},
+      'seven_day': {'status': 'allowed'},
+    };
+    expect(usageOf(u, 'five_hour'), u['five_hour']);
+    expect(usageOf(u, 'fable'), u['seven_day_fable']);
+    expect(usageOf({}, 'fable'), isNull);
+    expect(usagePct(u['five_hour']!), closeTo(42, 1e-9));
+    expect(usagePct(u['seven_day_fable']!), 80);
+    expect(usagePct(u['seven_day']!), isNull);
+    final now = DateTime.fromMillisecondsSinceEpoch(1000 * 1000);
+    expect(usageReset({'resetsAt': 1000 + 7500}, now), 'en 2 h 5 min');
+    expect(usageReset({'resetsAt': 1000 + 90000}, now), 'en 1 d 1 h');
+    expect(usageReset({'resetsAt': 999}, now), 'ya se reinició');
+    expect(usageReset({}, now), isNull);
+  });
 }
