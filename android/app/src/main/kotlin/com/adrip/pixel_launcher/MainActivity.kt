@@ -80,6 +80,18 @@ class MainActivity : FlutterActivity() {
                         PICK_IMAGES,
                     )
                 }
+                // Selector de archivos del sistema (cualquier tipo, sin permisos) para adjuntar a Claude.
+                // Devuelve [{path, name, mime, size}]: copias en la carpeta de la app (se borran al mandarlas).
+                "pickFiles" -> {
+                    await(result)
+                    startActivityForResult(
+                        Intent(Intent.ACTION_OPEN_DOCUMENT)
+                            .addCategory(Intent.CATEGORY_OPENABLE)
+                            .setType("*/*")
+                            .putExtra(Intent.EXTRA_ALLOW_MULTIPLE, true),
+                        PICK_FILES,
+                    )
+                }
                 // Borra la original del teléfono. Devuelve true si se borró.
                 "deleteImage" -> {
                     val uri = Uri.parse(call.argument<String>("uri"))
@@ -207,9 +219,33 @@ class MainActivity : FlutterActivity() {
             }
         }
         if (requestCode == PICK_WIDGET || requestCode == CONFIGURE_WIDGET) return widgetDone(resultCode == RESULT_OK)
-        if (requestCode != PICK_IMAGES && requestCode != DELETE_IMAGE) return
+        if (requestCode != PICK_IMAGES && requestCode != DELETE_IMAGE && requestCode != PICK_FILES) return
         val result = pending ?: return
         pending = null
+        if (requestCode == PICK_FILES) {
+            val clip = data?.clipData
+            val uris = if (clip != null) (0 until clip.itemCount).map { clip.getItemAt(it).uri } else listOfNotNull(data?.data)
+            Thread {
+                val dir = File(filesDir, "attachments").apply { mkdirs() }
+                val files = uris.mapNotNull { uri ->
+                    runCatching {
+                        var name = "archivo"
+                        var size = 0L
+                        contentResolver.query(uri, null, null, null, null)?.use { c ->
+                            if (c.moveToFirst()) {
+                                c.getColumnIndex(android.provider.OpenableColumns.DISPLAY_NAME).takeIf { it >= 0 }?.let { name = c.getString(it) }
+                                c.getColumnIndex(android.provider.OpenableColumns.SIZE).takeIf { it >= 0 }?.let { size = c.getLong(it) }
+                            }
+                        }
+                        val f = File(dir, "${System.nanoTime()}")
+                        contentResolver.openInputStream(uri)!!.use { input -> f.outputStream().use { input.copyTo(it) } }
+                        mapOf("path" to f.path, "name" to name, "mime" to (contentResolver.getType(uri) ?: ""), "size" to f.length())
+                    }.getOrNull()
+                }
+                runOnUiThread { result.success(files) }
+            }.start()
+            return
+        }
         if (requestCode == DELETE_IMAGE) {
             result.success(resultCode == RESULT_OK)
             return
@@ -295,6 +331,7 @@ class MainActivity : FlutterActivity() {
     companion object {
         const val PICK_IMAGES = 1
         const val DELETE_IMAGE = 2
+        const val PICK_FILES = 7
         const val PICK_WIDGET = 3
         const val CONFIGURE_WIDGET = 4
         const val TERMUX_PERMISSION = 5

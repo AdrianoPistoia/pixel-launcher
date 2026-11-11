@@ -1,3 +1,5 @@
+import 'dart:io';
+
 import 'package:android_intent_plus/android_intent.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
@@ -264,10 +266,66 @@ class _TerminalTabState extends State<TerminalTab> {
         ],
         const SizedBox(height: 8),
         if (bridge.status != null) Text(bridge.status!, style: Px.text.copyWith(color: Px.accent)),
-        _viewHint,
       ],
     );
   }
+
+  /// Mensaje para Claude: caja grande de varias líneas, con ADJUNTAR (archivos, fotos, capturas, PDFs).
+  /// Los adjuntos quedan en `bridge.drafts[id]`. Devuelve el texto, o null si se cancela.
+  Future<String?> _compose(String id) {
+    final input = TextEditingController();
+    final files = bridge.drafts[id] ??= [];
+    return showPixelDialog<String>(
+      context,
+      'Mensaje para Claude',
+      (ctx) => StatefulBuilder(
+        builder: (ctx, setLocal) => Column(
+          mainAxisSize: MainAxisSize.min,
+          crossAxisAlignment: CrossAxisAlignment.stretch,
+          children: [
+            TextField(
+              controller: input,
+              autofocus: true,
+              style: Px.text,
+              decoration: Px.input('escribí acá...'),
+              keyboardType: TextInputType.multiline,
+              textInputAction: TextInputAction.newline,
+              minLines: 8,
+              maxLines: 14,
+            ),
+            for (final f in files)
+              Padding(
+                padding: const EdgeInsets.only(top: 4),
+                child: PixelTile(
+                  label: '${f.name} (${_size(f.size)}) · QUITAR',
+                  onTap: () {
+                    File(f.path).delete().ignore();
+                    setLocal(() => files.remove(f));
+                  },
+                ),
+              ),
+            const SizedBox(height: 8),
+            Wrap(
+              spacing: 8,
+              runSpacing: 4,
+              children: [
+                PixelTile(
+                  label: 'ADJUNTAR',
+                  onTap: () async {
+                    final picked = await pickAttachments();
+                    setLocal(() => files.addAll(picked));
+                  },
+                ),
+                PixelTile(label: 'ENVIAR', onTap: () => Navigator.pop(ctx, input.text)),
+              ],
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+
+  static String _size(int b) => b >= 1 << 20 ? '${(b / (1 << 20)).toStringAsFixed(1)} MB' : '${(b / 1024).ceil()} KB';
 
   Future<void> _newSession() async {
     final cwd = (await askText(context, 'Carpeta de la sesión', initial: '/root'))?.trim();
@@ -295,7 +353,7 @@ class _TerminalTabState extends State<TerminalTab> {
       const SizedBox(height: 8),
       if (bridge.status != null) Text(bridge.status!, style: Px.text.copyWith(color: Px.accent)),
       _hint('* = corriendo · ${padLabel(PadButton.menu)} menú de la sesión'),
-      _viewHint,
+      _viewHint, // el único lugar del aviso de Y
     ],
   );
 
@@ -420,15 +478,20 @@ class _TerminalTabState extends State<TerminalTab> {
               autofocus: true,
               label: 'ESCRIBIR',
               onTap: () async {
-                final t = (await askText(context, 'Mensaje para Claude'))?.trim();
-                if (t != null && t.isNotEmpty) bridge.send(id, cwd, t);
+                final t = (await _compose(id))?.trim();
+                final files = List<Attachment>.of(bridge.drafts.remove(id) ?? []);
+                if (t != null && (t.isNotEmpty || files.isNotEmpty)) {
+                  bridge.send(id, cwd, t, files: files);
+                } else {
+                  // se canceló: los archivos quedan para el próximo mensaje
+                  if (files.isNotEmpty) bridge.drafts[id] = files;
+                }
               },
             ),
             if (bridge.busy.contains(id)) PixelTile(label: 'DETENER', onTap: () => bridge.stop(id)),
             // modo auto: el MCP permite todo sin preguntar (incluye instalar apps y Shizuku)
             PixelTile(label: auto ? 'AUTO: SÍ' : 'AUTO: NO', selected: auto, onTap: () => set({'auto': !auto})),
-            _viewHint,
-          ],
+              ],
         ),
       ],
     );
@@ -466,7 +529,6 @@ class _TerminalTabState extends State<TerminalTab> {
           const SizedBox(height: 8),
         ],
         Expanded(child: WebUtil(c)),
-        _viewHint,
       ],
     );
   }

@@ -71,6 +71,7 @@ function start(s) {
   const mcp = { mcpServers: { launcher: { type: 'http', url: `http://127.0.0.1:8766/mcp?session=${s.id}&cwd=${encodeURIComponent(s.cwd)}`, headers: { Authorization: 'Bearer ' + TOKEN } } } };
   const args = ['-p', '--input-format', 'stream-json', '--output-format', 'stream-json', '--verbose',
     '--mcp-config', JSON.stringify(mcp), '--permission-prompt-tool', 'mcp__launcher__approve',
+    '--add-dir', path.join(DIR, 'attachments'), // adjuntos: Claude los lee desde ahí sin pedir permiso de carpeta
     ...(transcript(s.id, s.cwd) ? ['--resume', s.id] : ['--session-id', s.id]), ...EXTRA];
   const child = spawn('claude', args, { cwd: s.cwd, stdio: ['pipe', 'pipe', 'pipe'] });
   const p = { child, busy: false }; // busy: turno en curso
@@ -113,9 +114,22 @@ function handle(sock, m) {
     }
     subscribe(id, sock); // en el mismo tick que la historia: no se pierde ningún evento en vivo
   } else if (op === 'send') {
-    const text = typeof m.text === 'string' ? m.text : '';
+    let text = typeof m.text === 'string' ? m.text : '';
+    // Adjuntos {name, data: base64}: se guardan en ~/.pixel/attachments/<id>/ y el mensaje lleva las rutas
+    // (Claude lee imágenes y PDFs con Read). Solo el nombre base: nada de rutas que vengan del cliente.
+    const saved = [];
+    if (Array.isArray(m.files)) for (const f of m.files) {
+      if (!f || typeof f.data !== 'string') continue;
+      const dir = path.join(DIR, 'attachments', id);
+      fs.mkdirSync(dir, { recursive: true });
+      const name = path.basename(String(f.name || 'archivo')).replace(/[^\w.\- ]/g, '_') || 'archivo';
+      const file = path.join(dir, Date.now() + '-' + name);
+      fs.writeFileSync(file, Buffer.from(f.data, 'base64'));
+      saved.push(file);
+    }
+    if (saved.length) text += (text ? '\n\n' : '') + 'Archivos adjuntos:\n' + saved.map(f => '- ' + f).join('\n');
     const cwd = known?.cwd || (typeof m.cwd === 'string' && m.cwd && path.resolve(os.homedir(), m.cwd));
-    if (!text || !cwd) return send(sock, { op: 'error', id, message: 'send necesita text y cwd' });
+    if (!text || !cwd) return send(sock, { op: 'error', id, message: 'send necesita text (o files) y cwd' });
     const s = known || { id, cwd, title: text.replace(/\s+/g, ' ').slice(0, 60), updated: 0 };
     s.updated = Date.now(); sessions.set(id, s); save();
     subscribe(id, sock); // quien manda sin haber hecho open igual ve las respuestas

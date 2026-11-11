@@ -66,6 +66,32 @@ Future<void> setupTermux({bool toolchain = false}) async => _termux([
 
 Future<void> loginClaude() => _termux(['-c', 'proot-distro login debian -- claude']);
 
+/// Un archivo elegido para adjuntar: copia en la carpeta de la app (path), nombre original y tamaño.
+class Attachment {
+  Attachment(this.path, this.name, this.size);
+  final String path, name;
+  final int size;
+
+  /// El puente lo manda en una línea de JSON por el socket: más que esto lo ahoga.
+  static const maxBytes = 20 * 1024 * 1024;
+}
+
+/// Selector de archivos del sistema (fotos, capturas, PDFs, lo que sea). Descarta los que pasan [Attachment.maxBytes].
+Future<List<Attachment>> pickAttachments() async {
+  final all = [
+    for (final p in await native.invokeMethod<List>('pickFiles') ?? [])
+      Attachment(
+        (p as Map)['path'] as String,
+        p['name'] as String,
+        (p['size'] as num).toInt(),
+      ),
+  ];
+  for (final a in all.where((a) => a.size > Attachment.maxBytes)) {
+    File(a.path).delete().ignore();
+  }
+  return all.where((a) => a.size <= Attachment.maxBytes).toList();
+}
+
 // ─── Puente ──────────────────────────────────────────────────────────────────
 
 /// Conexión con `bridge.js`: NDJSON por TCP. Las sesiones y sus eventos viven acá y no en la
@@ -185,16 +211,34 @@ class Bridge extends ChangeNotifier {
     _send({'op': 'open', 'id': id, 'cwd': cwd});
   }
 
-  void send(String id, String cwd, String text) {
+  /// Adjuntos pendientes por sesión (los elige ADJUNTAR en el mensaje; el puente los guarda en Debian).
+  final drafts = <String, List<Attachment>>{};
+
+  void send(String id, String cwd, String text, {List<Attachment> files = const []}) {
     startMcp(); // sin él, claude arranca sin `approve` y no puede usar ninguna tool
     approvedTurn.remove(id);
     busy.add(id);
     // claude no repite los mensajes del usuario: lo mostramos ya (la historia lo trae al reconectar)
     (events[id] ??= []).add({
       'type': 'user',
-      'message': {'role': 'user', 'content': text},
+      'message': {
+        'role': 'user',
+        'content': [text, for (final f in files) '[adjunto: ${f.name}]'].where((t) => t.isNotEmpty).join('\n'),
+      },
     });
-    _send({'op': 'send', 'id': id, 'cwd': cwd, 'text': text});
+    _send({
+      'op': 'send',
+      'id': id,
+      'cwd': cwd,
+      'text': text,
+      if (files.isNotEmpty)
+        'files': [
+          for (final f in files) {'name': f.name, 'data': base64Encode(File(f.path).readAsBytesSync())},
+        ],
+    });
+    for (final f in files) {
+      File(f.path).delete().ignore(); // la copia ya está en el puente
+    }
     notifyListeners();
   }
 

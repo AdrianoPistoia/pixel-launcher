@@ -43,7 +43,7 @@ Cliente → puente:
 | `{"token":"…"}` | Primera línea, obligatoria. Si no coincide, cierra. |
 | `{"op":"sessions"}` | Lista de sesiones. |
 | `{"op":"open","id":"<uuid>","cwd":"/root/proyecto"}` | Se suscribe a la sesión. Primero reenvía la historia (líneas `user`/`assistant` del `.jsonl` de Claude), después los eventos en vivo. No arranca el proceso. |
-| `{"op":"send","id":"<uuid>","cwd":"…","text":"…"}` | Manda un mensaje. Si el proceso no está vivo, lo arranca (`--session-id` si la sesión es nueva, `--resume` si ya existe). |
+| `{"op":"send","id":"<uuid>","cwd":"…","text":"…","files":[{"name","data"}]}` | Manda un mensaje. `files` (opcional, `data` en base64, hasta 20 MB c/u) se guarda en `~/.pixel/attachments/<id>/` y el texto lleva las rutas (Claude lee imágenes y PDFs con Read; el puente lanza `claude` con `--add-dir` de esa carpeta). Alcanza con `files` sin `text`. Si el proceso no está vivo, lo arranca (`--session-id` si la sesión es nueva, `--resume` si ya existe). |
 | `{"op":"stop","id":"<uuid>"}` | Interrumpe el turno (`control_request` `interrupt`). |
 | `{"op":"close","id":"<uuid>"}` | Termina el proceso (la sesión queda en disco para retomarla). |
 
