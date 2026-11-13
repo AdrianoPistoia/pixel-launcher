@@ -240,6 +240,8 @@ class _TerminalTabState extends State<TerminalTab> with TickerProviderStateMixin
   late final wiggle = AnimationController(vsync: this, duration: const Duration(milliseconds: 700));
   late final ease = AnimationController(vsync: this, duration: const Duration(milliseconds: 180));
   String? dragId; // sesión que se está arrastrando
+  String? hoverId; // fila sobre la que está el arrastre...
+  int hoverZone = 0; // ...y zona: -1 borde de arriba (poner antes), 0 medio (agrupar), 1 borde de abajo (poner después)
   final scroll = ScrollController();
   int seen = 0; // eventos ya mostrados: si llegan más, baja al final
   bool todosOpen = true; // el panel de tareas del chat, desplegado o solo la barra
@@ -605,7 +607,10 @@ class _TerminalTabState extends State<TerminalTab> with TickerProviderStateMixin
   /// id = empieza a arrastrar esa sesión; null = soltó (se llama desde varios lados, es idempotente).
   void _drag(String? id) {
     if (!mounted || dragId == id) return;
-    setState(() => dragId = id);
+    setState(() {
+      dragId = id;
+      hoverId = null;
+    });
     if (id != null) {
       wiggle.repeat();
       ease.forward();
@@ -736,8 +741,17 @@ class _TerminalTabState extends State<TerminalTab> with TickerProviderStateMixin
     );
   }
 
-  /// Fila de una sesión: mantener apretado y mover = arrastrar (sobre otra sesión arma proyecto,
-  /// sobre un proyecto la mete); el menú es el botón `...` de la derecha (o el botón de menú del mando).
+  List<Map<String, dynamic>> _loose() {
+    final grouped = {for (final p in projects.list) ...projects.idsOf(p)};
+    return projects.ordered([
+      for (final s in bridge.sessions)
+        if (!grouped.contains(s['id'])) s,
+    ]);
+  }
+
+  /// Fila de una sesión: mantener apretado y mover = arrastrar. Sobre el medio de otra sesión arma
+  /// proyecto (o se suma al suyo); sobre su borde de arriba/abajo la acomoda antes/después sin agrupar.
+  /// El menú es el botón `...` de la derecha (o el botón de menú del mando).
   Widget _sessionRow(Map<String, dynamic> s, int i, {bool indent = false}) {
     final id = s['id'] as String;
     final tile = PixelTile(
@@ -749,40 +763,80 @@ class _TerminalTabState extends State<TerminalTab> with TickerProviderStateMixin
     return Padding(
       key: ValueKey(id), // que la fila no se recree si cambia de lugar (perdería el arrastre)
       padding: EdgeInsets.only(top: 4, left: indent ? Px.unit * 4 : 0),
-      child: DragTarget<String>(
-        onWillAcceptWithDetails: (d) => d.data != id,
-        onAcceptWithDetails: (d) => _dropOnSession(d.data, id),
-        builder: (_, over, _) => LayoutBuilder(
-          builder: (context, box) {
-            final shown = over.isEmpty
-                ? tile
-                : PixelTile(maxLines: 2, selected: true, label: 'Soltar acá: agrupar con esta sesión\n${_titleOf(id)}');
+      child: LayoutBuilder(
+        builder: (context, box) => DragTarget<String>(
+          onWillAcceptWithDetails: (d) => d.data != id,
+          onMove: (d) {
+            final rb = context.findRenderObject() as RenderBox;
+            // el centro de la fila arrastrada (la del feedback mide más o menos lo mismo)
+            final y = rb.globalToLocal(Offset(0, d.offset.dy + rb.size.height / 2)).dy / rb.size.height;
+            final z = y < 0.3 ? -1 : (y > 0.7 ? 1 : 0);
+            if (hoverId != id || hoverZone != z) {
+              setState(() {
+                hoverId = id;
+                hoverZone = z;
+              });
+            }
+          },
+          onLeave: (_) {
+            if (hoverId == id) setState(() => hoverId = null);
+          },
+          onAcceptWithDetails: (d) {
+            final z = hoverId == id ? hoverZone : 0;
+            hoverId = null;
+            if (z == 0) {
+              _dropOnSession(d.data, id);
+            } else {
+              projects.move(d.data, id, after: z > 0, loose: [for (final l in _loose()) l['id'] as String]);
+            }
+          },
+          builder: (_, over, _) {
+            final zone = over.isNotEmpty && hoverId == id ? hoverZone : 0;
+            final grouping = over.isNotEmpty && zone == 0;
+            final shown = grouping
+                ? PixelTile(maxLines: 2, selected: true, label: 'Soltar acá: agrupar con esta sesión\n${_titleOf(id)}')
+                : tile;
             return _skewed(
               Row(
                 children: [
                   Expanded(
-                    child: LongPressDraggable<String>(
-                      data: id,
-                      delay: const Duration(milliseconds: 300),
-                      hapticFeedbackOnStart: true,
-                      onDragStarted: () => _drag(id),
-                      onDragEnd: (_) => _drag(null),
-                      feedback: Material(
-                        type: MaterialType.transparency,
-                        child: SizedBox(
-                          width: box.maxWidth - 48, // sin el botón del menú
-                          child: Transform.rotate(
-                            angle: -0.03,
-                            child: PixelTile(
-                              maxLines: 2,
-                              selected: true,
-                              label: '${s['title'] ?? '(sin título)'}\n${s['cwd']}',
+                    child: Stack(
+                      clipBehavior: Clip.none,
+                      children: [
+                        LongPressDraggable<String>(
+                          data: id,
+                          delay: const Duration(milliseconds: 300),
+                          hapticFeedbackOnStart: true,
+                          onDragStarted: () => _drag(id),
+                          onDragEnd: (_) => _drag(null),
+                          feedback: Material(
+                            type: MaterialType.transparency,
+                            child: SizedBox(
+                              width: box.maxWidth - 48, // sin el botón del menú
+                              child: Transform.rotate(
+                                angle: -0.03,
+                                child: PixelTile(
+                                  maxLines: 2,
+                                  selected: true,
+                                  label: '${s['title'] ?? '(sin título)'}\n${s['cwd']}',
+                                ),
+                              ),
                             ),
                           ),
+                          childWhenDragging: Opacity(opacity: 0.3, child: tile),
+                          child: shown,
                         ),
-                      ),
-                      childWhenDragging: Opacity(opacity: 0.3, child: tile),
-                      child: shown,
+                        // línea de inserción: antes / después de esta fila
+                        if (zone != 0)
+                          Positioned(
+                            left: 0,
+                            right: 0,
+                            top: zone < 0 ? -3 : null,
+                            bottom: zone > 0 ? -3 : null,
+                            height: 4,
+                            child: IgnorePointer(child: ColoredBox(color: Px.accent)),
+                          ),
+                      ],
                     ),
                   ),
                   const SizedBox(width: 4),
@@ -800,7 +854,7 @@ class _TerminalTabState extends State<TerminalTab> with TickerProviderStateMixin
 
   Widget _sessions() {
     final byId = {for (final s in bridge.sessions) s['id'] as String: s};
-    final grouped = {for (final p in projects.list) ...projects.idsOf(p)};
+    final loose = _loose();
     var i = 0;
     return Listener(
       // red de seguridad: sea como sea que termine el gesto, el vaivén se apaga
@@ -827,12 +881,11 @@ class _TerminalTabState extends State<TerminalTab> with TickerProviderStateMixin
               for (final id in projects.idsOf(p))
                 if (byId[id] != null) _sessionRow(byId[id]!, i++, indent: true),
           ],
-          for (final s in bridge.sessions)
-            if (!grouped.contains(s['id'])) _sessionRow(s, i++),
+          for (final s in loose) _sessionRow(s, i++),
           const SizedBox(height: 8),
           if (bridge.status != null) Text(bridge.status!, style: Px.text.copyWith(color: Px.accent)),
           _hint(
-            '* = corriendo · mantené y arrastrá una sesión sobre otra para armar un proyecto · ... o ${padLabel(PadButton.menu)} menú',
+            '* = corriendo · mantené y arrastrá: sobre el medio de otra arma un proyecto, en el borde la acomoda arriba o abajo · ... o ${padLabel(PadButton.menu)} menú',
           ),
           _viewHint, // el único lugar del aviso de Y
         ],

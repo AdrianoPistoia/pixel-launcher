@@ -10,9 +10,14 @@ import 'claude.dart' show uuid4;
 /// [{id, name, open, ids: [sessionId…]}]. Una sesión está en un proyecto como mucho.
 class SessionProjects extends ChangeNotifier {
   List<Map<String, dynamic>> list = [];
+
+  /// Orden manual de las sesiones sueltas (ids); las que no figuran van primero.
+  List<String> order = [];
   late final _prefs = SharedPreferencesAsync();
 
   Future<void> load() async {
+    final ord = await _prefs.getString('session_order');
+    if (ord != null) order = List<String>.from(jsonDecode(ord) as List);
     final raw = await _prefs.getString('session_projects');
     if (raw != null) {
       list = [
@@ -26,6 +31,33 @@ class SessionProjects extends ChangeNotifier {
   void _save() {
     notifyListeners();
     _prefs.setString('session_projects', jsonEncode(list));
+    _prefs.setString('session_order', jsonEncode(order));
+  }
+
+  /// Las sesiones sueltas [loose] en el orden manual (estable; las desconocidas van primero).
+  List<Map<String, dynamic>> ordered(List<Map<String, dynamic>> loose) {
+    final keyed = [for (var i = 0; i < loose.length; i++) (order.indexOf(loose[i]['id'] as String), i, loose[i])];
+    keyed.sort((a, b) => a.$1 != b.$1 ? a.$1.compareTo(b.$1) : a.$2.compareTo(b.$2));
+    return [for (final k in keyed) k.$3];
+  }
+
+  /// Pone [sid] justo antes/después de [target], sin agrupar. Si [target] está en un proyecto,
+  /// [sid] entra a ese proyecto en esa posición; si no, queda suelta en el orden de [loose]
+  /// (ids de las sueltas, en el orden en que se ven).
+  void move(String sid, String target, {required bool after, required List<String> loose}) {
+    if (sid == target) return;
+    _take(sid);
+    final p = of(target);
+    if (p != null) {
+      final ids = idsOf(p);
+      ids.insert(ids.indexOf(target) + (after ? 1 : 0), sid);
+    } else {
+      final o = [...loose]..remove(sid);
+      final at = o.indexOf(target);
+      o.insert(at < 0 ? o.length : at + (after ? 1 : 0), sid);
+      order = o;
+    }
+    _save();
   }
 
   Map<String, dynamic>? byId(String id) => list.where((p) => p['id'] == id).firstOrNull;
