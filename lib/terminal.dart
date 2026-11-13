@@ -72,7 +72,7 @@ List<Line> chatLines(List<Map> events, String cwd) {
                 say(who, '${b['text']}')
               else if (b['type'] == 'tool_use') ...[
                 _tool(b, results['${b['id']}'], rel),
-                if (_writtenFile(b, results['${b['id']}']) case final f?) (Msg.file, f, null),
+                if (_writtenFile(b, results['${b['id']}']) case final f?) (Msg.file, f, '${b['id']}'),
               ],
           ];
         }(),
@@ -100,9 +100,11 @@ Line _tool(Map b, Map? r, String Function(String) rel) {
   final mark = r == null ? '~' : (r['is_error'] == true ? '!' : '>');
   var out = r == null ? '(corriendo)' : _plain(r['content']);
   if (out.length > 6000) out = '…${out.substring(out.length - 6000)}'; // ponytail: solo la cola de salidas enormes
+  // la razón (3–6 palabras que pide el puente) va al frente: se lee aunque el comando se corte
+  final why = input['description'] is String ? (input['description'] as String).trim() : '';
   return (
     Msg.tool,
-    '$mark ${bareTool('${b['name']}')} ${rel(_target(input))}',
+    '$mark ${why.isEmpty ? '' : '$why · '}${bareTool('${b['name']}')} ${rel(_target(input))}',
     '${[for (final e in input.entries) '${e.key}: ${e.value}'].join('\n')}\n\n── resultado ──\n$out',
   );
 }
@@ -851,7 +853,7 @@ class _TerminalTabState extends State<TerminalTab> with TickerProviderStateMixin
   Widget _chat(String id, String cwd) {
     bridge.open(id, cwd); // una vez por conexión; no notifica
     final events = bridge.events[id] ?? [];
-    final lines = chatLines(events, cwd);
+    final lines = [...chatLines(events, cwd), if (bridge.live[id] case final t? when t.isNotEmpty) (Msg.claude, t, null)];
     final todos = latestTodos(events);
     final auto = tabStore.tabs[widget.tab]['auto'] == true;
     if (events.length != seen) {
@@ -886,19 +888,15 @@ class _TerminalTabState extends State<TerminalTab> with TickerProviderStateMixin
             separatorBuilder: (_, _) => const SizedBox(height: 4),
             itemBuilder: (context, i) => switch (lines[lines.length - 1 - i]) {
               (Msg.status, final t, null) => _hint(t),
+              // una tool corriendo (~) late mientras la sesión siga en un turno; si se cortó, queda como interrumpida (×)
               (Msg.status || Msg.tool, final t, final d) => PixelTile(
-                label: t,
+                label: t.startsWith('~ ') && !bridge.busy.contains(id) ? '× ${t.substring(2)}' : t,
+                pulse: t.startsWith('~ ') && bridge.busy.contains(id),
                 onTap: d == null ? null : () => _detail(t, d),
               ),
               // mis mensajes: pegados a la derecha, con fondo celeste (enfocables para bajar con el D-pad)
               // archivo generado: tocar abre con la última app de su tipo; mantener (o menú) = elegir otra
-              (Msg.file, final t, _) => PixelTile(
-                maxLines: 2,
-                label:
-                    '▣ ${baseName(t)}\n${fileOpeners.of(fileKind(t)) == null ? 'ABRIR CON…' : 'ABRIR CON ${fileOpeners.of(fileKind(t))!['label']}'.toUpperCase()}',
-                onTap: () => openGenerated(context, t),
-                onLongPress: () => showFileMenu(context, t),
-              ),
+              (Msg.file, final t, final id) => FileCard(path: t, id: id ?? t),
               (Msg.user, final t, _) => Align(
                 alignment: Alignment.centerRight,
                 child: LayoutBuilder(
@@ -939,8 +937,10 @@ class _TerminalTabState extends State<TerminalTab> with TickerProviderStateMixin
           children: [
             PixelTile(
               autofocus: true,
-              label: 'ESCRIBIR',
-              onTap: () async {
+              // mientras Claude responde no se escribe ni se manda otro mensaje (DETENER lo corta)
+              label: bridge.busy.contains(id) ? 'RESPONDIENDO…' : 'ESCRIBIR',
+              pulse: bridge.busy.contains(id),
+              onTap: bridge.busy.contains(id) ? null : () async {
                 final t = (await _compose(id))?.trim();
                 final files = List<Attachment>.of(bridge.drafts.remove(id) ?? []);
                 if (t != null && (t.isNotEmpty || files.isNotEmpty)) {

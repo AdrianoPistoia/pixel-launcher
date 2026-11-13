@@ -7,7 +7,12 @@ import android.appwidget.AppWidgetManager
 import android.content.Context
 import android.content.Intent
 import android.content.pm.PackageManager
+import android.graphics.Bitmap
+import android.graphics.Color
+import android.graphics.pdf.PdfRenderer
+import android.media.MediaMetadataRetriever
 import android.net.Uri
+import android.os.ParcelFileDescriptor
 import android.os.Build
 import android.os.Bundle
 import android.provider.DocumentsContract
@@ -162,6 +167,36 @@ class MainActivity : FlutterActivity() {
                         null
                     }.getOrElse { it.message ?: "no se pudo hablar con Termux" },
                 )
+                // Carpeta de caché real del launcher (la única que el FileProvider comparte; systemTemp de Dart es code_cache)
+                "cacheDir" -> result.success(cacheDir.absolutePath)
+                // Miniatura PNG de la primera página de un PDF o del primer cuadro de un video. Devuelve la ruta o null.
+                "thumb" -> {
+                    val path = call.argument<String>("path")!!
+                    val out = call.argument<String>("out")!!
+                    Thread {
+                        val ok = runCatching {
+                            val bmp: Bitmap? = if (path.endsWith(".pdf", true)) {
+                                val pfd = ParcelFileDescriptor.open(File(path), ParcelFileDescriptor.MODE_READ_ONLY)
+                                val r = PdfRenderer(pfd)
+                                try {
+                                    val p = r.openPage(0)
+                                    try {
+                                        val w = 600
+                                        Bitmap.createBitmap(w, (w * p.height / p.width.toFloat()).toInt(), Bitmap.Config.ARGB_8888).also {
+                                            it.eraseColor(Color.WHITE)
+                                            p.render(it, null, null, PdfRenderer.Page.RENDER_MODE_FOR_DISPLAY)
+                                        }
+                                    } finally { p.close() }
+                                } finally { r.close(); pfd.close() }
+                            } else {
+                                val m = MediaMetadataRetriever()
+                                try { m.setDataSource(path); m.getFrameAtTime(0) } finally { m.release() }
+                            }
+                            bmp?.let { b -> File(out).outputStream().use { b.compress(Bitmap.CompressFormat.PNG, 100, it) }; true } ?: false
+                        }.getOrDefault(false)
+                        runOnUiThread { result.success(if (ok) out else null) }
+                    }.start()
+                }
                 // Apps que saben abrir este archivo (ACTION_VIEW): [{pkg, label}]
                 "appsFor" -> {
                     val i = viewIntent(call.argument<String>("path")!!)

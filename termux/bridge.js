@@ -8,9 +8,11 @@ const { randomUUID, timingSafeEqual } = require('crypto');
 const DIR = process.env.PIXEL_DIR || path.join(os.homedir(), '.pixel');
 const CLAUDE_DIR = process.env.CLAUDE_CONFIG_DIR || path.join(os.homedir(), '.claude');
 const PORT = +process.env.PORT || 8765;
+// El chat del launcher muestra `description` al frente de cada tool: que siempre diga la razón, cortita.
+const STYLE = 'En este chat cada comando se ve en una sola línea. Al usar Bash (o cualquier tool con campo `description`) completá siempre `description` con 3 a 6 palabras en español que digan PARA QUÉ es (ej. "Instalar dependencias", "Ver qué ocupa espacio"), no qué hace el comando. Todo script que escribas a un archivo o pases en varias líneas empieza con un comentario de una línea con esa misma aclaración corta.';
 const EXTRA = (process.env.CLAUDE_BRIDGE_ARGS || '').split(/\s+/).filter(Boolean); // ej. "--model haiku" (solo test)
 // Sube este número cuando cambie el protocolo: el launcher reinicia solo el puente viejo.
-const VERSION = 2;
+const VERSION = 4;
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
 fs.mkdirSync(DIR, { recursive: true });
@@ -71,7 +73,8 @@ const transcript = (id, cwd) => {
 function start(s) {
   fs.mkdirSync(s.cwd, { recursive: true });
   const mcp = { mcpServers: { launcher: { type: 'http', url: `http://127.0.0.1:8766/mcp?session=${s.id}&cwd=${encodeURIComponent(s.cwd)}`, headers: { Authorization: 'Bearer ' + TOKEN } } } };
-  const args = ['-p', '--input-format', 'stream-json', '--output-format', 'stream-json', '--verbose',
+  const args = ['-p', '--input-format', 'stream-json', '--output-format', 'stream-json', '--verbose', '--include-partial-messages', // texto en vivo (stream_event)
+    '--append-system-prompt', STYLE,
     '--mcp-config', JSON.stringify(mcp), '--permission-prompt-tool', 'mcp__launcher__approve',
     '--add-dir', path.join(DIR, 'attachments'), // adjuntos: Claude los lee desde ahí sin pedir permiso de carpeta
     ...(transcript(s.id, s.cwd) ? ['--resume', s.id] : ['--session-id', s.id]), ...EXTRA];

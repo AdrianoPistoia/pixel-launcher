@@ -52,9 +52,9 @@ class Px {
         );
 
   /// Caja: en pixel, bordes rectos y sombra dura sin blur; en G.U., panel translúcido que brilla al elegirlo.
-  static ShapeDecoration box({bool active = false}) => ShapeDecoration(
+  static ShapeDecoration box({bool active = false, Color? edge}) => ShapeDecoration(
     color: active ? hi : (gu ? bg.withValues(alpha: 0.8) : bg),
-    shape: border(active ? hi : dim),
+    shape: border(active ? hi : (edge ?? dim)),
     shadows: gu
         ? [if (active) BoxShadow(color: hi.withValues(alpha: 0.45), blurRadius: 14)]
         : const [BoxShadow(color: shadow, offset: Offset(unit * 2, unit * 2))],
@@ -112,6 +112,7 @@ class PixelTile extends StatefulWidget {
     this.vertical = false,
     this.match = '',
     this.maxLines = 1,
+    this.pulse = false,
   });
 
   final String label;
@@ -123,14 +124,38 @@ class PixelTile extends StatefulWidget {
   final bool autofocus;
   final bool vertical; // ícono arriba y texto abajo, centrado (para grillas)
   final String match; // parte del label a resaltar (sin importar mayúsculas), p. ej. lo que se buscó
+  final bool pulse; // el borde late entre el color de borde y el de acento (algo corriendo)
   final int? maxLines; // null = todas las que haga falta (mensajes largos)
 
   @override
   State<PixelTile> createState() => _PixelTileState();
 }
 
-class _PixelTileState extends State<PixelTile> {
+class _PixelTileState extends State<PixelTile> with SingleTickerProviderStateMixin {
   bool focused = false;
+  late final AnimationController beat = AnimationController(vsync: this, duration: const Duration(milliseconds: 900));
+
+  @override
+  void initState() {
+    super.initState();
+    if (widget.pulse) beat.repeat(reverse: true);
+  }
+
+  @override
+  void didUpdateWidget(PixelTile old) {
+    super.didUpdateWidget(old);
+    if (widget.pulse && !beat.isAnimating) {
+      beat.repeat(reverse: true);
+    } else if (!widget.pulse && beat.isAnimating) {
+      beat.stop(); // deja de correr: vuelve el borde normal
+    }
+  }
+
+  @override
+  void dispose() {
+    beat.dispose();
+    super.dispose();
+  }
 
   @override
   Widget build(BuildContext context) {
@@ -169,9 +194,16 @@ class _PixelTileState extends State<PixelTile> {
       child: GestureDetector(
         onTap: widget.onTap,
         onLongPress: widget.onLongPress,
-        child: Container(
-          padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
-          decoration: Px.box(active: on),
+        child: AnimatedBuilder(
+          animation: beat,
+          builder: (context, child) => Container(
+            padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
+            decoration: Px.box(
+              active: on,
+              edge: widget.pulse ? Color.lerp(Px.dim, Px.accent, beat.value) : null,
+            ),
+            child: child,
+          ),
           // los PixelGlyph toman este color: se invierten junto con el tile
           child: IconTheme(
             data: IconThemeData(color: on ? Px.bg : Px.fg),

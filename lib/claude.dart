@@ -159,6 +159,7 @@ class Bridge extends ChangeNotifier {
   List<Map<String, dynamic>> sessions = [];
   final events = <String, List<Map<String, dynamic>>>{}; // id → eventos de stream-json
   final busy = <String>{}; // sesiones con un turno en curso
+  final live = <String, String>{}; // texto de la respuesta que Claude está escribiendo ahora (stream), por sesión
   final usage = <String, Map<String, dynamic>>{}; // último rate_limit_info por rateLimitType (five_hour, seven_day…)
   final approvedTurn = <String>{}; // sesiones con lo de bajo riesgo aprobado hasta el próximo mensaje
   final _open = <String, String>{}; // suscripciones id → cwd; se renuevan al reconectar
@@ -234,6 +235,7 @@ class Bridge extends ChangeNotifier {
     _socket?.destroy();
     _socket = null;
     busy.clear();
+    live.clear();
     notifyListeners();
   }
 
@@ -252,6 +254,18 @@ class Bridge extends ChangeNotifier {
         sessions = List<Map<String, dynamic>>.from(m['list'] as List);
       case 'event':
         final ev = m['event'] as Map<String, dynamic>;
+        if (ev['type'] == 'stream_event') {
+          // pedazos de texto en vivo: no van a events (serían cientos); se muestran hasta que llega el mensaje completo
+          final e = ev['event'];
+          final d = e is Map ? e['delta'] : null;
+          if (e is Map && e['type'] == 'message_start') {
+            live.remove(id);
+          } else if (d is Map && d['type'] == 'text_delta') {
+            live[id!] = '${live[id] ?? ''}${d['text']}';
+          }
+          break;
+        }
+        if (ev['type'] == 'assistant' || ev['type'] == 'result') live.remove(id);
         (events[id!] ??= []).add(ev);
         if (ev['type'] == 'rate_limit_event' && ev['rate_limit_info'] is Map) {
           final i = Map<String, dynamic>.from(ev['rate_limit_info'] as Map);
@@ -261,6 +275,7 @@ class Bridge extends ChangeNotifier {
         if (ev['type'] == 'system' && ev['subtype'] == 'init') busy.add(id);
       case 'exit':
         busy.remove(id);
+        live.remove(id);
         refreshSessions();
       case 'hello':
         final v = RegExp(r'const VERSION = (\d+)').firstMatch(_bridgeSource)?[1];
@@ -275,6 +290,7 @@ class Bridge extends ChangeNotifier {
           return;
         }
         busy.remove(id); // p. ej. no pudo lanzar claude
+        live.remove(id);
         status = msg;
     }
     notifyListeners();
@@ -303,7 +319,8 @@ class Bridge extends ChangeNotifier {
     final r = await c.future.timeout(const Duration(seconds: 30), onTimeout: () => {'error': 'no respondió'});
     _files.remove(req);
     if (r['error'] != null) throw '${r['error']}';
-    final dir = Directory('${Directory.systemTemp.path}/artifacts')..createSync(recursive: true);
+    final cache = await native.invokeMethod<String>('cacheDir');
+    final dir = Directory('$cache/artifacts')..createSync(recursive: true);
     // carpeta propia por archivo: dos "index.html" distintos no se pisan
     final out = File('${dir.path}/${req.substring(0, 8)}/${r['name']}')..createSync(recursive: true);
     out.writeAsBytesSync(base64Decode(r['data'] as String));
@@ -324,6 +341,7 @@ class Bridge extends ChangeNotifier {
   final drafts = <String, List<Attachment>>{};
 
   void send(String id, String cwd, String text, {List<Attachment> files = const []}) {
+    if (busy.contains(id)) return; // un turno a la vez: mientras responde no se manda otro mensaje
     startMcp(); // sin él, claude arranca sin `approve` y no puede usar ninguna tool
     approvedTurn.remove(id);
     busy.add(id);
