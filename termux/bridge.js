@@ -8,11 +8,11 @@ const { randomUUID, timingSafeEqual } = require('crypto');
 const DIR = process.env.PIXEL_DIR || path.join(os.homedir(), '.pixel');
 const CLAUDE_DIR = process.env.CLAUDE_CONFIG_DIR || path.join(os.homedir(), '.claude');
 const PORT = +process.env.PORT || 8765;
-// El chat del launcher muestra `description` al frente de cada tool: que siempre diga la razón, cortita.
-const STYLE = 'En este chat cada comando se ve en una sola línea. Al usar Bash (o cualquier tool con campo `description`) completá siempre `description` con 3 a 6 palabras en español que digan PARA QUÉ es (ej. "Instalar dependencias", "Ver qué ocupa espacio"), no qué hace el comando. Todo script que escribas a un archivo o pases en varias líneas empieza con un comentario de una línea con esa misma aclaración corta.';
+// El chat del launcher muestra `description` como título de cada tool: que siempre diga el objetivo, cortito.
+const STYLE = 'En este chat cada comando se muestra como una caja con un TÍTULO. Al usar Bash (o cualquier tool con campo `description`) completá siempre `description` con 3 a 6 palabras en español que digan el OBJETIVO del comando, no qué hace (ej. "Instalar dependencias", "Ver qué ocupa espacio"). Ese título es lo que ve el usuario: no empieces los scripts con comentarios que expliquen para qué son.';
 const EXTRA = (process.env.CLAUDE_BRIDGE_ARGS || '').split(/\s+/).filter(Boolean); // ej. "--model haiku" (solo test)
 // Sube este número cuando cambie el protocolo: el launcher reinicia solo el puente viejo.
-const VERSION = 4;
+const VERSION = 6;
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
 fs.mkdirSync(DIR, { recursive: true });

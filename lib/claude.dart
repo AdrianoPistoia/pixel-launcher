@@ -463,10 +463,16 @@ String repercussions(String tool, Map input) {
 
 // ─── Servidor MCP ────────────────────────────────────────────────────────────
 
-Map<String, Object> _schema(Map<String, String> props) => {
+/// [why]: suma `description` (opcional): el título que el chat muestra en la caja de la tool.
+Map<String, Object> _schema(Map<String, String> props, {bool why = false}) => {
   'type': 'object',
   'properties': {
     for (final MapEntry(:key, :value) in props.entries) key: {'type': value},
+    if (why)
+      'description': {
+        'type': 'string',
+        'description': 'Objetivo de esta llamada en 3 a 6 palabras en español (es el título que ve el usuario).',
+      },
   },
   'required': props.keys.toList(),
 };
@@ -482,20 +488,20 @@ final _tools = [
     'description':
         'Corre un comando como usuario shell de Android vía Shizuku (settings, pm, cmd, dumpsys, am…). '
         'Devuelve code, out y err.',
-    'inputSchema': _schema({'cmd': 'string'}),
+    'inputSchema': _schema({'cmd': 'string'}, why: true),
   },
   {
     'name': 'install_apk',
     'description':
         'Instala un APK con pm install -r vía Shizuku. Responde antes de instalar (instalar el launcher '
         'lo cierra). La ruta tiene que estar en /sdcard: Shizuku no ve los archivos de Debian.',
-    'inputSchema': _schema({'path': 'string'}),
+    'inputSchema': _schema({'path': 'string'}, why: true),
   },
   {'name': 'apps', 'description': 'Apps instaladas, con cuántas veces se abrió cada una.', 'inputSchema': _schema({})},
   {
     'name': 'launch_app',
     'description': 'Abre una app por su package.',
-    'inputSchema': _schema({'package': 'string'}),
+    'inputSchema': _schema({'package': 'string'}, why: true),
   },
   {
     'name': 'tabs_get',
@@ -506,7 +512,7 @@ final _tools = [
     'name': 'tabs_set',
     'description':
         'Reemplaza las pestañas del launcher; mismo formato que tabs_get. Tipos: ${tabKinds.keys.join(', ')}.',
-    'inputSchema': _schema({'tabs': 'array'}),
+    'inputSchema': _schema({'tabs': 'array'}, why: true),
   },
 ];
 

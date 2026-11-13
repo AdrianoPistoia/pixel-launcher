@@ -69,6 +69,34 @@ void main() {
     expect(uuid4(), matches(RegExp(r'^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$')));
   });
 
+  test('chat: cada tool tiene título: el description de Claude o uno por defecto', () {
+    Line tool(String name, Map input) => chatLines([
+      {
+        'type': 'assistant',
+        'message': {
+          'content': [
+            {'type': 'tool_use', 'id': 't', 'name': name, 'input': input},
+          ],
+        },
+      },
+    ], cwd).single;
+    expect(
+      tool('Bash', {'command': 'npm i', 'description': 'Instalar dependencias'}).$2,
+      '~ Instalar dependencias\n  Bash npm i',
+    );
+    // sin description: título por defecto y, de comando, la primera línea real (sin comentarios)
+    expect(
+      tool('Bash', {'command': '#!/bin/sh\n# nota\n\nrm -rf /tmp/x'}).$2,
+      '~ Ejecutar comando\n  Bash rm -rf /tmp/x',
+    );
+    expect(
+      tool('mcp__launcher__install_apk', {'path': '/sdcard/a.apk'}).$2,
+      '~ Instalar app\n  install_apk /sdcard/a.apk',
+    );
+    expect(tool('mcp__launcher__tabs_get', {}).$2, '~ Ver pestañas'); // genérico y sin objetivo: solo el título
+    expect(tool('Cosa', {'x': 1}).$2, '~ Cosa'); // tool desconocida: como antes
+  });
+
   test('chat: tool en una línea relativa, errores cortos, pensamientos no', () {
     final ev = {
       'type': 'assistant',
@@ -86,7 +114,7 @@ void main() {
       },
     };
     final pending = chatLines([ev], cwd);
-    expect(pending.map((l) => (l.$1, l.$2)), [(Msg.claude, 'Hola'), (Msg.tool, '~ Edit lib/x.dart')]);
+    expect(pending.map((l) => (l.$1, l.$2)), [(Msg.claude, 'Hola'), (Msg.tool, '~ Editar archivo\n  Edit lib/x.dart')]);
     final err = {
       'type': 'user',
       'message': {
@@ -103,7 +131,7 @@ void main() {
     // el resultado va dentro de la línea de su tool: marca ! y el detalle trae comando y salida
     final done = chatLines([ev, err], cwd);
     expect(done.length, 2);
-    expect(done[1].$2, '! Edit lib/x.dart');
+    expect(done[1].$2, '! Editar archivo\n  Edit lib/x.dart');
     expect(done[1].$3, allOf(contains('file_path: $cwd/lib/x.dart'), endsWith('No existe')));
     final note = chatLines([
       {

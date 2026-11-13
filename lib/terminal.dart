@@ -100,11 +100,15 @@ Line _tool(Map b, Map? r, String Function(String) rel) {
   final mark = r == null ? '~' : (r['is_error'] == true ? '!' : '>');
   var out = r == null ? '(corriendo)' : _plain(r['content']);
   if (out.length > 6000) out = '…${out.substring(out.length - 6000)}'; // ponytail: solo la cola de salidas enormes
-  // la razón (3–6 palabras que pide el puente) va al frente: se lee aunque el comando se corte
-  final why = input['description'] is String ? (input['description'] as String).trim() : '';
+  // cada tool lleva un título con su objetivo, en su propia línea arriba de lo que hace: el `description`
+  // de Claude o uno por defecto según la tool. Si el título es el genérico y no hay sobre qué, basta con él.
+  final tool = bareTool('${b['name']}');
+  final (why, own) = _title(tool, input);
+  final target = rel(_target(input));
+  final what = '$tool $target'.trim();
   return (
     Msg.tool,
-    '$mark ${why.isEmpty ? '' : '$why · '}${bareTool('${b['name']}')} ${rel(_target(input))}',
+    why.isEmpty ? '$mark $what' : (!own && target.isEmpty ? '$mark $why' : '$mark $why\n  $what'),
     '${[for (final e in input.entries) '${e.key}: ${e.value}'].join('\n')}\n\n── resultado ──\n$out',
   );
 }
@@ -166,11 +170,51 @@ TextSpan mdLine(String line) {
   );
 }
 
+/// Líneas útiles de un script: sin vacías, sin `#!` y sin comentarios `# …`.
+Iterable<String> _code(String script) =>
+    script.split('\n').map((l) => l.trim()).where((l) => l.isNotEmpty && !l.startsWith('#'));
+
+/// Título por defecto de cada tool (cuando Claude no mandó `description`): para qué sirve, en pocas palabras.
+const _toolTitles = {
+  'Read': 'Leer archivo',
+  'Edit': 'Editar archivo',
+  'MultiEdit': 'Editar archivo',
+  'Write': 'Crear archivo',
+  'NotebookEdit': 'Editar notebook',
+  'Glob': 'Buscar archivos',
+  'Grep': 'Buscar en el código',
+  'LS': 'Listar carpeta',
+  'Bash': 'Ejecutar comando',
+  'BashOutput': 'Leer salida de un comando',
+  'KillShell': 'Frenar un comando',
+  'WebFetch': 'Leer una página web',
+  'WebSearch': 'Buscar en la web',
+  'TodoWrite': 'Actualizar tareas',
+  'Task': 'Delegar en un subagente',
+  'ExitPlanMode': 'Terminar el plan',
+  'android_shell': 'Comando de Android',
+  'install_apk': 'Instalar app',
+  'apps': 'Ver apps instaladas',
+  'launch_app': 'Abrir app',
+  'tabs_get': 'Ver pestañas',
+  'tabs_set': 'Cambiar pestañas',
+};
+
+/// Título de una tool: el objetivo que mandó Claude en `description`; si no, el de [_toolTitles].
+(String title, bool own) _title(String tool, Object? input) {
+  final d = input is Map ? input['description'] : null;
+  if (d is String && d.trim().isNotEmpty) return (d.trim().split('\n').first, true);
+  return (_toolTitles[tool] ?? '', false);
+}
+
 /// Sobre qué actúa una tool, en una línea: archivo, comando, patrón, dirección…
 String _target(Object? input) {
   if (input is! Map) return '';
   for (final k in ['file_path', 'notebook_path', 'command', 'cmd', 'pattern', 'path', 'url', 'query', 'package']) {
-    if (input[k] != null) return '${input[k]}'.split('\n').first;
+    if (input[k] == null) continue;
+    final v = '${input[k]}';
+    // en scripts, la primera línea real (los comentarios ya son el título)
+    return k == 'command' || k == 'cmd' ? _code(v).firstOrNull ?? v.split('\n').first : v.split('\n').first;
   }
   return '';
 }
@@ -693,7 +737,7 @@ class _TerminalTabState extends State<TerminalTab> with TickerProviderStateMixin
   }
 
   /// Fila de una sesión: mantener apretado y mover = arrastrar (sobre otra sesión arma proyecto,
-  /// sobre un proyecto la mete); mantener sin mover (o el botón de menú) abre el menú.
+  /// sobre un proyecto la mete); el menú es el botón `...` de la derecha (o el botón de menú del mando).
   Widget _sessionRow(Map<String, dynamic> s, int i, {bool indent = false}) {
     final id = s['id'] as String;
     final tile = PixelTile(
@@ -713,37 +757,38 @@ class _TerminalTabState extends State<TerminalTab> with TickerProviderStateMixin
             final shown = over.isEmpty
                 ? tile
                 : PixelTile(maxLines: 2, selected: true, label: 'Soltar acá: agrupar con esta sesión\n${_titleOf(id)}');
-            Offset? from;
             return _skewed(
-              LongPressDraggable<String>(
-                data: id,
-                delay: const Duration(milliseconds: 300),
-                hapticFeedbackOnStart: true,
-                onDragStarted: () {
-                  from = (context.findRenderObject() as RenderBox?)?.localToGlobal(Offset.zero);
-                  _drag(id);
-                },
-                onDragEnd: (d) {
-                  _drag(null);
-                  // se soltó sin mover: era un long-press común, abre el menú
-                  if (!d.wasAccepted && from != null && (d.offset - from!).distance < 12) _sessionMenu(s);
-                },
-                feedback: Material(
-                  type: MaterialType.transparency,
-                  child: SizedBox(
-                    width: box.maxWidth,
-                    child: Transform.rotate(
-                      angle: -0.03,
-                      child: PixelTile(
-                        maxLines: 2,
-                        selected: true,
-                        label: '${s['title'] ?? '(sin título)'}\n${s['cwd']}',
+              Row(
+                children: [
+                  Expanded(
+                    child: LongPressDraggable<String>(
+                      data: id,
+                      delay: const Duration(milliseconds: 300),
+                      hapticFeedbackOnStart: true,
+                      onDragStarted: () => _drag(id),
+                      onDragEnd: (_) => _drag(null),
+                      feedback: Material(
+                        type: MaterialType.transparency,
+                        child: SizedBox(
+                          width: box.maxWidth - 48, // sin el botón del menú
+                          child: Transform.rotate(
+                            angle: -0.03,
+                            child: PixelTile(
+                              maxLines: 2,
+                              selected: true,
+                              label: '${s['title'] ?? '(sin título)'}\n${s['cwd']}',
+                            ),
+                          ),
+                        ),
                       ),
+                      childWhenDragging: Opacity(opacity: 0.3, child: tile),
+                      child: shown,
                     ),
                   ),
-                ),
-                childWhenDragging: Opacity(opacity: 0.3, child: tile),
-                child: shown,
+                  const SizedBox(width: 4),
+                  // el menú, aparte del arrastre: mantener apretado la fila ya es arrastrar
+                  PixelTile(label: '...', onTap: () => _sessionMenu(s)),
+                ],
               ),
               dragId == id ? -1 : i,
             );
@@ -787,7 +832,7 @@ class _TerminalTabState extends State<TerminalTab> with TickerProviderStateMixin
           const SizedBox(height: 8),
           if (bridge.status != null) Text(bridge.status!, style: Px.text.copyWith(color: Px.accent)),
           _hint(
-            '* = corriendo · mantené y arrastrá una sesión sobre otra para armar un proyecto · ${padLabel(PadButton.menu)} menú',
+            '* = corriendo · mantené y arrastrá una sesión sobre otra para armar un proyecto · ... o ${padLabel(PadButton.menu)} menú',
           ),
           _viewHint, // el único lugar del aviso de Y
         ],
@@ -853,7 +898,10 @@ class _TerminalTabState extends State<TerminalTab> with TickerProviderStateMixin
   Widget _chat(String id, String cwd) {
     bridge.open(id, cwd); // una vez por conexión; no notifica
     final events = bridge.events[id] ?? [];
-    final lines = [...chatLines(events, cwd), if (bridge.live[id] case final t? when t.isNotEmpty) (Msg.claude, t, null)];
+    final lines = [
+      ...chatLines(events, cwd),
+      if (bridge.live[id] case final t? when t.isNotEmpty) (Msg.claude, t, null),
+    ];
     final todos = latestTodos(events);
     final auto = tabStore.tabs[widget.tab]['auto'] == true;
     if (events.length != seen) {
@@ -890,6 +938,7 @@ class _TerminalTabState extends State<TerminalTab> with TickerProviderStateMixin
               (Msg.status, final t, null) => _hint(t),
               // una tool corriendo (~) late mientras la sesión siga en un turno; si se cortó, queda como interrumpida (×)
               (Msg.status || Msg.tool, final t, final d) => PixelTile(
+                maxLines: t.contains('\n') ? 2 : 1, // con título: objetivo arriba, comando abajo
                 label: t.startsWith('~ ') && !bridge.busy.contains(id) ? '× ${t.substring(2)}' : t,
                 pulse: t.startsWith('~ ') && bridge.busy.contains(id),
                 onTap: d == null ? null : () => _detail(t, d),
@@ -940,16 +989,18 @@ class _TerminalTabState extends State<TerminalTab> with TickerProviderStateMixin
               // mientras Claude responde no se escribe ni se manda otro mensaje (DETENER lo corta)
               label: bridge.busy.contains(id) ? 'RESPONDIENDO…' : 'ESCRIBIR',
               pulse: bridge.busy.contains(id),
-              onTap: bridge.busy.contains(id) ? null : () async {
-                final t = (await _compose(id))?.trim();
-                final files = List<Attachment>.of(bridge.drafts.remove(id) ?? []);
-                if (t != null && (t.isNotEmpty || files.isNotEmpty)) {
-                  bridge.send(id, cwd, t, files: files);
-                } else {
-                  // se canceló: los archivos quedan para el próximo mensaje
-                  if (files.isNotEmpty) bridge.drafts[id] = files;
-                }
-              },
+              onTap: bridge.busy.contains(id)
+                  ? null
+                  : () async {
+                      final t = (await _compose(id))?.trim();
+                      final files = List<Attachment>.of(bridge.drafts.remove(id) ?? []);
+                      if (t != null && (t.isNotEmpty || files.isNotEmpty)) {
+                        bridge.send(id, cwd, t, files: files);
+                      } else {
+                        // se canceló: los archivos quedan para el próximo mensaje
+                        if (files.isNotEmpty) bridge.drafts[id] = files;
+                      }
+                    },
             ),
             if (bridge.busy.contains(id)) PixelTile(label: 'DETENER', onTap: () => bridge.stop(id)),
             PixelTile(label: 'USO', onTap: _usage),
