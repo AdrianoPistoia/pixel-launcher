@@ -17,6 +17,9 @@ class Px {
   static Color get dim => gu ? const Color(0xFF2E5A78) : const Color(0xFF6B5E7A); // bordes y decoración
   static Color get dimText => gu ? const Color(0xFF7FA3BD) : const Color(0xFF9C90AC); // texto secundario
   static Color get hi => gu ? const Color(0xFF39C7E8) : fg; // relleno de lo elegido
+  static Color get userBubble => gu
+      ? const Color(0xE6247A9E)
+      : const Color(0xFF2F6F8F); // celeste apagado y casi opaco: el texto claro se sigue leyendo
   static const shadow = Color(0xFF000000);
 
   static String get font => gu ? 'SpaceGrotesk' : 'VT323';
@@ -55,6 +58,13 @@ class Px {
     shadows: gu
         ? [if (active) BoxShadow(color: hi.withValues(alpha: 0.45), blurRadius: 14)]
         : const [BoxShadow(color: shadow, offset: Offset(unit * 2, unit * 2))],
+  );
+
+  /// Cuadro de mensaje del usuario en el chat: caja con fondo celeste.
+  static ShapeDecoration bubble({bool focused = false}) => ShapeDecoration(
+    color: userBubble,
+    shape: border(focused ? hi : userBubble),
+    shadows: gu ? null : const [BoxShadow(color: shadow, offset: Offset(unit * 2, unit * 2))],
   );
 
   static InputDecoration input(String hint) => InputDecoration(
@@ -96,6 +106,7 @@ class PixelTile extends StatefulWidget {
     this.leading,
     this.onTap,
     this.onLongPress,
+    this.onMenu,
     this.selected = false,
     this.autofocus = false,
     this.vertical = false,
@@ -107,6 +118,7 @@ class PixelTile extends StatefulWidget {
   final Widget? leading;
   final VoidCallback? onTap;
   final VoidCallback? onLongPress;
+  final VoidCallback? onMenu; // solo botón de menú del mando (el long-press táctil lo usa otro gesto, p. ej. arrastrar)
   final bool selected;
   final bool autofocus;
   final bool vertical; // ícono arriba y texto abajo, centrado (para grillas)
@@ -151,7 +163,8 @@ class _PixelTileState extends State<PixelTile> {
       onFocusChange: (f) => setState(() => focused = f),
       actions: {
         ActivateIntent: CallbackAction<ActivateIntent>(onInvoke: (_) => widget.onTap?.call()),
-        if (widget.onLongPress != null) MenuIntent: CallbackAction<MenuIntent>(onInvoke: (_) => widget.onLongPress!()),
+        if ((widget.onMenu ?? widget.onLongPress) != null)
+          MenuIntent: CallbackAction<MenuIntent>(onInvoke: (_) => (widget.onMenu ?? widget.onLongPress)!()),
       },
       child: GestureDetector(
         onTap: widget.onTap,

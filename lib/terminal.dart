@@ -1,4 +1,5 @@
 import 'dart:io';
+import 'dart:math';
 
 import 'package:android_intent_plus/android_intent.dart';
 import 'package:flutter/material.dart';
@@ -6,7 +7,9 @@ import 'package:flutter/services.dart';
 
 import 'apps.dart';
 import 'claude.dart';
+import 'files.dart';
 import 'pad.dart';
+import 'projects.dart';
 import 'tabs.dart';
 import 'ui.dart';
 import 'utilities.dart';
@@ -26,10 +29,18 @@ Future<void> nextTerminalView(int tab) {
 
 const _claudeApp = 'com.anthropic.claude';
 
-enum Msg { user, claude, tool, status }
+enum Msg { user, claude, tool, status, file }
 
 /// Una línea del chat: tipo, texto y el detalle que se abre al tocarla (tools y avisos).
 typedef Line = (Msg, String, String?);
+
+/// Archivos que Claude escribió con Write y salieron bien (ruta tal cual, para pedirla al puente).
+String? _writtenFile(Map b, Map? r) {
+  if (b['name'] != 'Write' || r == null || r['is_error'] == true) return null;
+  final input = b['input'];
+  final p = input is Map ? input['file_path'] : null;
+  return p is String && p.isNotEmpty ? p : null;
+}
 
 /// Qué mostrar de los eventos de stream-json de una sesión. Cada tool es una línea con su resultado
 /// adentro: `~` corriendo, `>` bien, `!` error. Pensamientos, system y rate limits no se muestran.
@@ -59,8 +70,10 @@ List<Line> chatLines(List<Map> events, String cwd) {
             for (final b in blocksOf(ev))
               if (b['type'] == 'text')
                 say(who, '${b['text']}')
-              else if (b['type'] == 'tool_use')
+              else if (b['type'] == 'tool_use') ...[
                 _tool(b, results['${b['id']}'], rel),
+                if (_writtenFile(b, results['${b['id']}']) case final f?) (Msg.file, f, null),
+              ],
           ];
         }(),
         'result' => [_result(ev)],
@@ -124,7 +137,11 @@ List<(bool, String)> mdBlocks(String md) {
 /// Una línea de prosa: títulos (#), viñetas (- / *), **negrita** y `código` en color.
 TextSpan mdLine(String line) {
   final h = RegExp(r'^#{1,6} +').firstMatch(line);
-  if (h != null) return TextSpan(text: line.substring(h.end), style: TextStyle(color: Px.accent));
+  if (h != null)
+    return TextSpan(
+      text: line.substring(h.end),
+      style: TextStyle(color: Px.accent),
+    );
   final text = line.replaceFirstMapped(RegExp(r'^( *)[-*] +'), (m) => '${m[1]}• ');
   final spans = <TextSpan>[];
   var at = 0;
@@ -171,7 +188,12 @@ class TerminalTab extends StatefulWidget {
   State<TerminalTab> createState() => _TerminalTabState();
 }
 
-class _TerminalTabState extends State<TerminalTab> {
+class _TerminalTabState extends State<TerminalTab> with TickerProviderStateMixin {
+  // mientras se arrastra una sesión, las demás hacen sube-y-baja (giran sobre su centro) sin parar;
+  // ease entra y sale suave: al soltar el vaivén se asienta solo en vez de cortarse
+  late final wiggle = AnimationController(vsync: this, duration: const Duration(milliseconds: 700));
+  late final ease = AnimationController(vsync: this, duration: const Duration(milliseconds: 180));
+  String? dragId; // sesión que se está arrastrando
   final scroll = ScrollController();
   int seen = 0; // eventos ya mostrados: si llegan más, baja al final
   bool todosOpen = true; // el panel de tareas del chat, desplegado o solo la barra
@@ -186,6 +208,8 @@ class _TerminalTabState extends State<TerminalTab> {
   @override
   void dispose() {
     scroll.dispose();
+    wiggle.dispose();
+    ease.dispose();
     super.dispose();
   }
 
@@ -209,7 +233,7 @@ class _TerminalTabState extends State<TerminalTab> {
 
   @override
   Widget build(BuildContext context) => ListenableBuilder(
-    listenable: Listenable.merge([tabStore, bridge, store]),
+    listenable: Listenable.merge([tabStore, bridge, store, fileOpeners, projects]),
     builder: (context, _) {
       if (widget.tab >= tabStore.tabs.length) return const SizedBox();
       final c = tabStore.tabs[widget.tab];
@@ -364,7 +388,8 @@ class _TerminalTabState extends State<TerminalTab> {
                               child: PixelTile(
                                 maxLines: 2,
                                 selected: t['status'] == 'in_progress',
-                                label: '${t['status'] == 'in_progress' ? (t['activeForm'] ?? t['content']) : t['content']}',
+                                label:
+                                    '${t['status'] == 'in_progress' ? (t['activeForm'] ?? t['content']) : t['content']}',
                                 onTap: () => _todoDetail(i, todos),
                               ),
                             ),
@@ -412,7 +437,11 @@ class _TerminalTabState extends State<TerminalTab> {
         mainAxisSize: MainAxisSize.min,
         crossAxisAlignment: CrossAxisAlignment.stretch,
         children: [
-          for (final (name, key) in const [('Últimas 5 horas', 'five_hour'), ('Semanal', 'seven_day'), ('Fable', 'fable')])
+          for (final (name, key) in const [
+            ('Últimas 5 horas', 'five_hour'),
+            ('Semanal', 'seven_day'),
+            ('Fable', 'fable'),
+          ])
             _usageRow(name, usageOf(bridge.usage, key)),
           _hint('Se actualiza cuando Claude responde. Sin datos = todavía no mandó el aviso de límite.'),
           const SizedBox(height: 8),
@@ -519,35 +548,250 @@ class _TerminalTabState extends State<TerminalTab> {
 
   static String _size(int b) => b >= 1 << 20 ? '${(b / (1 << 20)).toStringAsFixed(1)} MB' : '${(b / 1024).ceil()} KB';
 
-  Future<void> _newSession() async {
+  Future<void> _newSession({String? project}) async {
     final cwd = (await askText(context, 'Carpeta de la sesión', initial: '/root'))?.trim();
     if (cwd == null || cwd.isEmpty) return;
-    set({'session': uuid4(), 'cwd': cwd});
+    final id = uuid4();
+    if (project != null) projects.add(project, id);
+    set({'session': id, 'cwd': cwd});
   }
 
-  Widget _sessions() => ListView(
-    padding: const EdgeInsets.only(right: Px.unit * 2, bottom: Px.unit * 2),
-    children: [
-      PixelTile(autofocus: true, label: '+ NUEVA SESIÓN', onTap: _newSession),
-      const SizedBox(height: 4),
-      PixelTile(label: 'INSTALACIÓN Y LOGIN', onTap: () => setState(() => showSteps = true)),
-      for (final s in bridge.sessions)
+  /// id = empieza a arrastrar esa sesión; null = soltó (se llama desde varios lados, es idempotente).
+  void _drag(String? id) {
+    if (!mounted || dragId == id) return;
+    setState(() => dragId = id);
+    if (id != null) {
+      wiggle.repeat();
+      ease.forward();
+    } else {
+      ease.reverse().whenComplete(() {
+        if (dragId == null) wiggle.stop();
+      });
+    }
+  }
+
+  String _titleOf(String id) {
+    final s = bridge.sessions.where((s) => s['id'] == id).firstOrNull;
+    return '${s?['title'] ?? '(sin título)'}';
+  }
+
+  /// Pide el nombre y crea un proyecto con esas sesiones.
+  Future<void> _newProject(List<String> ids) async {
+    final name = (await askText(context, 'Nombre del proyecto', initial: 'Proyecto'))?.trim();
+    if (name == null || name.isEmpty) return;
+    projects.create(name, ids);
+  }
+
+  /// Soltar [dragged] sobre la sesión [target]: si está en un proyecto se suma a él, si no se arma uno.
+  void _dropOnSession(String dragged, String target) {
+    final p = projects.of(target);
+    if (p != null) {
+      projects.add(p['id'] as String, dragged);
+    } else {
+      _newProject([target, dragged]);
+    }
+  }
+
+  void _sessionMenu(Map<String, dynamic> s) {
+    final id = s['id'] as String;
+    final inProject = projects.of(id);
+    showPixelMenu(context, 'Sesión', [
+      if (inProject != null) ('Sacar de "${inProject['name']}"', () => projects.remove(id)),
+      for (final p in projects.list)
+        if (p != inProject) ('Mover a "${p['name']}"', () => projects.add(p['id'] as String, id)),
+      ('Nuevo proyecto con esta sesión', () => _newProject([id])),
+      ('Terminar proceso', () => bridge.close(id)),
+      (
+        'Borrar sesión',
+        () => showPixelMenu(context, '¿Borrar "${s['title'] ?? '(sin título)'}"? No se puede deshacer', [
+          ('Cancelar', () {}),
+          (
+            'Sí, borrar',
+            () {
+              projects.remove(id);
+              bridge.delete(id);
+            },
+          ),
+        ]),
+      ),
+    ]);
+  }
+
+  void _projectMenu(Map<String, dynamic> p) {
+    final id = p['id'] as String;
+    showPixelMenu(context, 'Proyecto "${p['name']}"', [
+      ('Nueva sesión adentro', () => _newSession(project: id)),
+      (
+        'Renombrar',
+        () async {
+          final name = (await askText(context, 'Nombre del proyecto', initial: '${p['name']}'))?.trim();
+          if (name != null && name.isNotEmpty) projects.rename(id, name);
+        },
+      ),
+      (
+        'Borrar proyecto',
+        () => showPixelMenu(context, '¿Borrar "${p['name']}"? Las sesiones no se borran, quedan sueltas', [
+          ('Cancelar', () {}),
+          ('Sí, borrar proyecto', () => projects.delete(id)),
+        ]),
+      ),
+    ]);
+  }
+
+  static const _folder = [
+    '........',
+    '.###....',
+    '########',
+    '#......#',
+    '#......#',
+    '#......#',
+    '########',
+    '........',
+  ];
+
+  /// Sube-y-baja: rotación rígida sobre el centro (un lado menor sube y el otro baja), ±1,6°.
+  /// Filas vecinas en contrafase. Siempre envuelve (sin cambiar el árbol: si no, el Draggable se
+  /// recrea al empezar el arrastre). [i] < 0 = la fila arrastrada, quieta.
+  Widget _skewed(Widget child, int i) => AnimatedBuilder(
+    animation: Listenable.merge([wiggle, ease]),
+    builder: (_, c) => ease.value == 0 || i < 0
+        ? c!
+        : Transform.rotate(
+            angle:
+                sin(wiggle.value * 2 * pi + (i.isEven ? 0 : pi)) *
+                1.6 *
+                pi /
+                180 *
+                Curves.easeOut.transform(ease.value),
+            child: c,
+          ),
+    child: child,
+  );
+
+  Widget _projectHeader(Map<String, dynamic> p, int i, int count) {
+    final id = p['id'] as String;
+    final open = p['open'] == true;
+    return DragTarget<String>(
+      onWillAcceptWithDetails: (d) => !projects.idsOf(p).contains(d.data),
+      onAcceptWithDetails: (d) => projects.add(id, d.data),
+      builder: (_, over, _) => _skewed(
         Padding(
           padding: const EdgeInsets.only(top: 4),
           child: PixelTile(
-            maxLines: 2,
-            label: '${s['running'] == true ? '* ' : ''}${s['title'] ?? '(sin título)'}\n${s['cwd']}',
-            onTap: () => set({'session': s['id'], 'cwd': s['cwd']}),
-            onLongPress: () =>
-                showPixelMenu(context, 'Sesión', [('Terminar proceso', () => bridge.close(s['id'] as String))]),
+            leading: const PixelGlyph(_folder, size: Px.icon * 0.75),
+            label: '${p['name']} ($count) ${open ? 'v' : '>'}',
+            selected: over.isNotEmpty,
+            onTap: () => projects.toggle(id),
+            onLongPress: () => _projectMenu(p),
           ),
         ),
-      const SizedBox(height: 8),
-      if (bridge.status != null) Text(bridge.status!, style: Px.text.copyWith(color: Px.accent)),
-      _hint('* = corriendo · ${padLabel(PadButton.menu)} menú de la sesión'),
-      _viewHint, // el único lugar del aviso de Y
-    ],
-  );
+        i,
+      ),
+    );
+  }
+
+  /// Fila de una sesión: mantener apretado y mover = arrastrar (sobre otra sesión arma proyecto,
+  /// sobre un proyecto la mete); mantener sin mover (o el botón de menú) abre el menú.
+  Widget _sessionRow(Map<String, dynamic> s, int i, {bool indent = false}) {
+    final id = s['id'] as String;
+    final tile = PixelTile(
+      maxLines: 2,
+      label: '${s['running'] == true ? '* ' : ''}${s['title'] ?? '(sin título)'}\n${s['cwd']}',
+      onTap: () => set({'session': id, 'cwd': s['cwd']}),
+      onMenu: () => _sessionMenu(s),
+    );
+    return Padding(
+      key: ValueKey(id), // que la fila no se recree si cambia de lugar (perdería el arrastre)
+      padding: EdgeInsets.only(top: 4, left: indent ? Px.unit * 4 : 0),
+      child: DragTarget<String>(
+        onWillAcceptWithDetails: (d) => d.data != id,
+        onAcceptWithDetails: (d) => _dropOnSession(d.data, id),
+        builder: (_, over, _) => LayoutBuilder(
+          builder: (context, box) {
+            final shown = over.isEmpty
+                ? tile
+                : PixelTile(maxLines: 2, selected: true, label: 'Soltar acá: agrupar con esta sesión\n${_titleOf(id)}');
+            Offset? from;
+            return _skewed(
+              LongPressDraggable<String>(
+                data: id,
+                delay: const Duration(milliseconds: 300),
+                hapticFeedbackOnStart: true,
+                onDragStarted: () {
+                  from = (context.findRenderObject() as RenderBox?)?.localToGlobal(Offset.zero);
+                  _drag(id);
+                },
+                onDragEnd: (d) {
+                  _drag(null);
+                  // se soltó sin mover: era un long-press común, abre el menú
+                  if (!d.wasAccepted && from != null && (d.offset - from!).distance < 12) _sessionMenu(s);
+                },
+                feedback: Material(
+                  type: MaterialType.transparency,
+                  child: SizedBox(
+                    width: box.maxWidth,
+                    child: Transform.rotate(
+                      angle: -0.03,
+                      child: PixelTile(
+                        maxLines: 2,
+                        selected: true,
+                        label: '${s['title'] ?? '(sin título)'}\n${s['cwd']}',
+                      ),
+                    ),
+                  ),
+                ),
+                childWhenDragging: Opacity(opacity: 0.3, child: tile),
+                child: shown,
+              ),
+              dragId == id ? -1 : i,
+            );
+          },
+        ),
+      ),
+    );
+  }
+
+  Widget _sessions() {
+    final byId = {for (final s in bridge.sessions) s['id'] as String: s};
+    final grouped = {for (final p in projects.list) ...projects.idsOf(p)};
+    var i = 0;
+    return Listener(
+      // red de seguridad: sea como sea que termine el gesto, el vaivén se apaga
+      onPointerUp: (_) => _drag(null),
+      onPointerCancel: (_) => _drag(null),
+      child: ListView(
+        padding: const EdgeInsets.only(right: Px.unit * 2, bottom: Px.unit * 2),
+        children: [
+          PixelTile(autofocus: true, label: '+ NUEVA SESIÓN', onTap: _newSession),
+          const SizedBox(height: 4),
+          PixelTile(label: 'INSTALACIÓN Y LOGIN', onTap: () => setState(() => showSteps = true)),
+          // mientras se arrastra una sesión de un proyecto: soltarla acá la saca
+          if (dragId != null && projects.of(dragId!) != null)
+            DragTarget<String>(
+              onAcceptWithDetails: (d) => projects.remove(d.data),
+              builder: (_, over, _) => Padding(
+                padding: const EdgeInsets.only(top: 4),
+                child: PixelTile(selected: over.isNotEmpty, label: 'Soltar acá: sacar del proyecto'),
+              ),
+            ),
+          for (final p in projects.list) ...[
+            _projectHeader(p, i++, projects.idsOf(p).where(byId.containsKey).length),
+            if (p['open'] == true)
+              for (final id in projects.idsOf(p))
+                if (byId[id] != null) _sessionRow(byId[id]!, i++, indent: true),
+          ],
+          for (final s in bridge.sessions)
+            if (!grouped.contains(s['id'])) _sessionRow(s, i++),
+          const SizedBox(height: 8),
+          if (bridge.status != null) Text(bridge.status!, style: Px.text.copyWith(color: Px.accent)),
+          _hint(
+            '* = corriendo · mantené y arrastrá una sesión sobre otra para armar un proyecto · ${padLabel(PadButton.menu)} menú',
+          ),
+          _viewHint, // el único lugar del aviso de Y
+        ],
+      ),
+    );
+  }
 
   /// Respuesta de Claude: prosa con formato y bloques de código en recuadro, con COPIAR adentro.
   Widget _markdown(String md) => Column(
@@ -646,7 +890,32 @@ class _TerminalTabState extends State<TerminalTab> {
                 label: t,
                 onTap: d == null ? null : () => _detail(t, d),
               ),
-              (Msg.user, final t, _) => PixelTile(label: '» $t', maxLines: null),
+              // mis mensajes: pegados a la derecha, con fondo celeste (enfocables para bajar con el D-pad)
+              // archivo generado: tocar abre con la última app de su tipo; mantener (o menú) = elegir otra
+              (Msg.file, final t, _) => PixelTile(
+                maxLines: 2,
+                label:
+                    '▣ ${baseName(t)}\n${fileOpeners.of(fileKind(t)) == null ? 'ABRIR CON…' : 'ABRIR CON ${fileOpeners.of(fileKind(t))!['label']}'.toUpperCase()}',
+                onTap: () => openGenerated(context, t),
+                onLongPress: () => showFileMenu(context, t),
+              ),
+              (Msg.user, final t, _) => Align(
+                alignment: Alignment.centerRight,
+                child: LayoutBuilder(
+                  builder: (_, box) => ConstrainedBox(
+                    constraints: BoxConstraints(maxWidth: box.maxWidth * 0.85),
+                    child: Focus(
+                      child: Builder(
+                        builder: (ctx) => Container(
+                          padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
+                          decoration: Px.bubble(focused: Focus.of(ctx).hasFocus),
+                          child: Text(t, style: Px.text),
+                        ),
+                      ),
+                    ),
+                  ),
+                ),
+              ),
               // la respuesta de Claude, entera y sin marco: es lo que se lee
               // (enfocable igual, para bajar con el D-pad; el marco aparece solo con foco)
               (_, final t, _) => Focus(
@@ -686,7 +955,7 @@ class _TerminalTabState extends State<TerminalTab> {
             PixelTile(label: 'USO', onTap: _usage),
             // modo auto: el MCP permite todo sin preguntar (incluye instalar apps y Shizuku)
             PixelTile(label: auto ? 'AUTO: SÍ' : 'AUTO: NO', selected: auto, onTap: () => set({'auto': !auto})),
-              ],
+          ],
         ),
       ],
     );

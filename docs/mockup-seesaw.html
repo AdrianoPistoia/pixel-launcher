@@ -1,0 +1,207 @@
+<!doctype html>
+<html lang="es">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,user-scalable=no">
+<title>Demo: sube-y-baja al arrastrar sesiones</title>
+<style>
+  :root { --bg:#0b0f0b; --fg:#b7f5b0; --dim:#3d5a3a; --accent:#ffd84d; }
+  * { box-sizing:border-box; -webkit-tap-highlight-color:transparent; }
+  body { margin:0; background:var(--bg); color:var(--fg); font:18px/1.2 "VT323", ui-monospace, monospace; padding:12px; touch-action:pan-y; user-select:none; -webkit-user-select:none; }
+  h1 { font-size:20px; margin:0 0 4px; color:var(--accent); font-weight:normal; }
+  p.note { color:var(--dim); margin:0 0 10px; font-size:16px; }
+  .panel { border:2px solid var(--dim); padding:8px; margin-bottom:12px; }
+  .panel label { display:flex; align-items:center; gap:8px; margin:4px 0; }
+  .panel input[type=range] { flex:1; accent-color:var(--fg); }
+  button { background:var(--bg); color:var(--fg); border:2px solid var(--fg); font:inherit; padding:4px 10px; margin:2px 4px 2px 0; }
+  button.on { background:var(--fg); color:var(--bg); }
+  #list { padding:6px 14px 40px; position:relative; }
+  .row { margin-top:6px; position:relative; }
+  .tile { border:2px solid var(--fg); padding:6px 10px; background:var(--bg); transform-origin:50% 50%; will-change:transform; }
+  .tile small { display:block; color:var(--dim); font-size:15px; }
+  .tile.drag { opacity:.3; }
+  .tile.over { background:var(--fg); color:var(--bg); }
+  .tile.over small { color:var(--bg); }
+  .indent { margin-left:22px; }
+  .head { display:flex; gap:8px; align-items:center; }
+  .folder { width:16px; height:16px; image-rendering:pixelated; flex:none; }
+  #ghost { position:fixed; z-index:9; pointer-events:none; border:2px solid var(--fg); background:var(--fg); color:var(--bg); padding:6px 10px; display:none; transform:rotate(-1.5deg); }
+  #ghost small { display:block; font-size:15px; }
+  .hint { color:var(--dim); font-size:15px; margin-top:12px; }
+  .ang { color:var(--accent); }
+</style>
+</head>
+<body>
+<h1>Sube-y-baja al arrastrar</h1>
+<p class="note">Mantené apretada una sesión y movela (o tocá DEMO). Las demás filas giran sobre su centro, sin deformarse: un lado menor sube y el otro baja, y después al revés. Al soltar vuelven a 0 con suavidad.</p>
+
+<div class="panel">
+  <label>Ángulo máx <input id="amp" type="range" min="0.5" max="5" step="0.1" value="1.6"> <span class="ang" id="ampv"></span></label>
+  <label>Período <input id="per" type="range" min="300" max="1400" step="50" value="700"> <span class="ang" id="perv"></span></label>
+  <div>
+    Fase entre filas:
+    <button id="ph-alt" class="on">alternada</button>
+    <button id="ph-same">todas juntas</button>
+    <button id="ph-wave">ola</button>
+  </div>
+  <div><button id="demo">DEMO (arrastre automático)</button></div>
+</div>
+
+<div id="list"></div>
+<div class="hint">Alternada: filas pares e impares en contrafase (el sube-y-baja entre vecinas). Ola: cada fila con fase corrida. La fila arrastrada queda fija, atenuada.</div>
+<div id="ghost"></div>
+
+<script>
+const folder = [
+  "........",".###....","########","#......#","#......#","#......#","########","........"];
+function folderSvg() {
+  let r = '';
+  folder.forEach((row, y) => [...row].forEach((c, x) => { if (c === '#') r += `<rect x="${x}" y="${y}" width="1" height="1"/>`; }));
+  return `<svg class="folder" viewBox="0 0 8 8" fill="currentColor" shape-rendering="crispEdges">${r}</svg>`;
+}
+const items = [
+  {t:'refactor del puente', c:'/root/launcher', head:false},
+  {t:'Proyecto launcher (3) v', head:true},
+  {t:'terminal: proyectos', c:'/root/launcher', ind:true},
+  {t:'fix de adjuntos', c:'/root/launcher', ind:true},
+  {t:'notas de diseño', c:'/root/docs', ind:true},
+  {t:'probar en el emulador', c:'/root/emu'},
+  {t:'scripts de termux', c:'/root/termux'},
+  {t:'(sin título)', c:'/root'},
+];
+const list = document.getElementById('list');
+const rows = items.map((it, i) => {
+  const row = document.createElement('div');
+  row.className = 'row' + (it.ind ? ' indent' : '');
+  const tile = document.createElement('div');
+  tile.className = 'tile';
+  tile.innerHTML = it.head
+    ? `<div class="head">${folderSvg()}<span>${it.t}</span></div>`
+    : `${it.t}<small>${it.c}</small>`;
+  row.appendChild(tile);
+  list.appendChild(row);
+  return {row, tile, it, i, drag:false};
+});
+
+// ── estado de la animación ─────────────────────────────────────────────
+const amp = document.getElementById('amp'), per = document.getElementById('per');
+const ampv = document.getElementById('ampv'), perv = document.getElementById('perv');
+const sync = () => { ampv.textContent = amp.value + '°'; perv.textContent = per.value + ' ms'; };
+amp.oninput = per.oninput = sync; sync();
+
+let mode = 'alt';
+for (const m of ['alt','same','wave']) {
+  document.getElementById('ph-' + m).onclick = () => {
+    mode = m;
+    for (const k of ['alt','same','wave']) document.getElementById('ph-' + k).classList.toggle('on', k === m);
+  };
+}
+
+let dragging = null;          // fila arrastrada
+let gain = 0;                 // 0..1: entra y sale suave (sin cortes al soltar)
+let t0 = performance.now();
+let last = t0;
+
+function phaseOf(k) {
+  if (mode === 'same') return 0;
+  if (mode === 'wave') return k * 0.9;
+  return k % 2 ? Math.PI : 0;
+}
+
+function frame(now) {
+  const dt = now - last; last = now;
+  // el volumen sube rápido al empezar y baja en ~180 ms al soltar
+  const target = dragging ? 1 : 0;
+  gain += (target - gain) * Math.min(1, dt / (dragging ? 90 : 70));
+  if (!dragging && gain < 0.003) gain = 0;
+  const w = (now - t0) / +per.value * Math.PI * 2;
+  let k = 0;
+  for (const r of rows) {
+    if (r.drag || gain === 0) { r.tile.style.transform = ''; k++; continue; }
+    // rotación rígida sobre el centro de la caja: el lado izquierdo sube cuando el derecho baja
+    const a = Math.sin(w + phaseOf(k)) * +amp.value * gain;
+    r.tile.style.transform = `rotate(${a}deg)`;
+    k++;
+  }
+  requestAnimationFrame(frame);
+}
+requestAnimationFrame(frame);
+
+// ── arrastre real (mantener ~300 ms y mover) ───────────────────────────
+const ghost = document.getElementById('ghost');
+let timer = null, startXY = null, hold = null, overRow = null;
+
+function begin(r, x, y) {
+  dragging = r; r.drag = true; r.tile.classList.add('drag');
+  ghost.innerHTML = r.tile.innerHTML;
+  ghost.style.width = r.tile.offsetWidth + 'px';
+  ghost.style.display = 'block';
+  move(x, y);
+}
+function move(x, y) {
+  const w = ghost.offsetWidth;
+  ghost.style.left = (x - w / 2) + 'px';
+  ghost.style.top = (y - 20) + 'px';
+  overRow = null;
+  for (const r of rows) {
+    const b = r.row.getBoundingClientRect();
+    const hit = !r.drag && y > b.top && y < b.bottom;
+    r.tile.classList.toggle('over', hit);
+    if (hit) overRow = r;
+  }
+}
+function end() {
+  clearTimeout(timer);
+  if (dragging) {
+    dragging.drag = false; dragging.tile.classList.remove('drag');
+    dragging = null;               // ← al soltar, el sube-y-baja se apaga siempre
+  }
+  for (const r of rows) r.tile.classList.remove('over');
+  ghost.style.display = 'none';
+  hold = null; overRow = null;
+}
+
+for (const r of rows) {
+  r.tile.addEventListener('pointerdown', e => {
+    if (demoOn) return;
+    startXY = [e.clientX, e.clientY];
+    hold = r;
+    timer = setTimeout(() => begin(r, startXY[0], startXY[1]), 300);
+  });
+}
+addEventListener('pointermove', e => {
+  if (dragging && !demoOn) { e.preventDefault(); move(e.clientX, e.clientY); }
+  else if (hold && startXY && Math.hypot(e.clientX - startXY[0], e.clientY - startXY[1]) > 10) {
+    clearTimeout(timer); hold = null;       // se movió antes de los 300 ms: es scroll
+  }
+}, {passive:false});
+addEventListener('pointerup', () => { if (!demoOn) end(); });
+addEventListener('pointercancel', () => { if (!demoOn) end(); });
+addEventListener('touchmove', e => { if (dragging) e.preventDefault(); }, {passive:false});
+
+// ── demo automática ────────────────────────────────────────────────────
+let demoOn = false;
+const demoBtn = document.getElementById('demo');
+demoBtn.onclick = async () => {
+  if (demoOn) return;
+  demoOn = true; demoBtn.classList.add('on');
+  const lb = list.getBoundingClientRect();
+  const x = lb.left + lb.width / 2;
+  const ys = r => { const b = r.row.getBoundingClientRect(); return b.top + b.height / 2; };
+  const wait = ms => new Promise(s => setTimeout(s, ms));
+  const from = rows[0], to = rows[6];
+  begin(from, x, ys(from));
+  const y0 = ys(from), y1 = ys(to), steps = 90;
+  for (let s = 0; s <= steps; s++) {
+    const p = s / steps, e = p * p * (3 - 2 * p);
+    move(x, y0 + (y1 - y0) * e);
+    await wait(25);
+  }
+  await wait(900);
+  end();                      // al soltar las filas se asientan solas
+  await wait(400);
+  demoOn = false; demoBtn.classList.remove('on');
+};
+</script>
+</body>
+</html>

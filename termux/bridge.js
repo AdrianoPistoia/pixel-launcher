@@ -9,6 +9,8 @@ const DIR = process.env.PIXEL_DIR || path.join(os.homedir(), '.pixel');
 const CLAUDE_DIR = process.env.CLAUDE_CONFIG_DIR || path.join(os.homedir(), '.claude');
 const PORT = +process.env.PORT || 8765;
 const EXTRA = (process.env.CLAUDE_BRIDGE_ARGS || '').split(/\s+/).filter(Boolean); // ej. "--model haiku" (solo test)
+// Sube este número cuando cambie el protocolo: el launcher reinicia solo el puente viejo.
+const VERSION = 2;
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
 fs.mkdirSync(DIR, { recursive: true });
@@ -102,7 +104,19 @@ function handle(sock, m) {
     const list = [...sessions.values()].sort((a, b) => b.updated - a.updated).map(s => ({ ...s, running: procs.has(s.id) }));
     return send(sock, { op: 'sessions', list });
   }
-  if (!['open', 'send', 'stop', 'close'].includes(op)) return send(sock, { op: 'error', message: 'op desconocida: ' + op });
+  if (op === 'hello') return send(sock, { op: 'hello', version: VERSION });
+  if (op === 'file') {
+    // Un archivo que generó Claude (en Debian), para que el launcher lo abra con otra app. Tope de 25 MB.
+    const reply = o => send(sock, { op: 'file', req: m.req, path: m.path, ...o });
+    try {
+      const f = path.resolve(os.homedir(), String(m.path || ''));
+      const st = fs.statSync(f);
+      if (!st.isFile()) return reply({ error: 'no es un archivo' });
+      if (st.size > 25 << 20) return reply({ error: 'pesa más de 25 MB' });
+      return reply({ name: path.basename(f), data: fs.readFileSync(f).toString('base64') });
+    } catch (e) { return reply({ error: e.code === 'ENOENT' ? 'no existe (¿lo borraron?)' : e.message }); }
+  }
+  if (!['open', 'send', 'stop', 'close', 'delete'].includes(op)) return send(sock, { op: 'error', message: 'op desconocida: ' + op });
   if (!UUID.test(id)) return send(sock, { op: 'error', message: 'id inválido' });
   const known = sessions.get(id);
   if (op === 'open') {
@@ -138,6 +152,15 @@ function handle(sock, m) {
     p.child.stdin.write(JSON.stringify({ type: 'user', message: { role: 'user', content: text } }) + '\n');
   } else if (op === 'stop') {
     procs.get(id)?.child.stdin.write(JSON.stringify({ type: 'control_request', request_id: randomUUID(), request: { subtype: 'interrupt' } }) + '\n');
+  } else if (op === 'delete') {
+    // Borra la sesión: mata el proceso, la saca del registro y borra transcript y adjuntos.
+    const p = procs.get(id);
+    if (p) { p.child.kill(); procs.delete(id); }
+    const f = transcript(id, path.resolve(os.homedir(), known?.cwd || ''));
+    try { if (f) fs.rmSync(f); } catch (e) { say('delete transcript', e.message); }
+    try { fs.rmSync(path.join(DIR, 'attachments', id), { recursive: true, force: true }); } catch {}
+    sessions.delete(id); subs.delete(id); save();
+    handle(sock, { op: 'sessions' });
   } else {
     procs.get(id)?.child.kill(); // la sesión queda en disco; el 'close' del hijo avisa con op:exit
   }

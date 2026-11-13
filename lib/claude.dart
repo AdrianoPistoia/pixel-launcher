@@ -1,3 +1,4 @@
+import 'dart:async';
 import 'dart:convert';
 import 'dart:io';
 import 'dart:math';
@@ -44,6 +45,25 @@ Future<void> _termux(List<String> args, {bool background = false}) async {
   }
   final err = await native.invokeMethod<String>('termux', {'args': args, 'background': background});
   if (err != null) throw err;
+}
+
+/// Si Shizuku no corre (Android lo mata por inactividad), abre su app para que arranque y espera
+/// hasta [wait] a que responda y vuelve al launcher. Devuelve si quedó vivo. Con wireless debugging
+/// puede hacer falta tocar "Iniciar" en Shizuku a mano (el aviso lo dice).
+Future<bool> ensureShizuku({Duration wait = const Duration(seconds: 12)}) async {
+  Future<bool> alive() async => await native.invokeMethod<bool>('shizukuAlive') == true;
+  if (await alive()) return true;
+  const pkg = 'moe.shizuku.privileged.api';
+  if (!store.apps.any((a) => a.packageName == pkg)) return false;
+  await store.launch(pkg);
+  final end = DateTime.now().add(wait);
+  var up = false;
+  while (!up && DateTime.now().isBefore(end)) {
+    await Future<void>.delayed(const Duration(milliseconds: 500));
+    up = await alive();
+  }
+  await native.invokeMethod<void>('toFront'); // sin esto Android no deja arrancar el servicio de Termux desde atrás
+  return up;
 }
 
 /// Arranca el puente en segundo plano (mata el anterior si había).
@@ -154,6 +174,7 @@ class Bridge extends ChangeNotifier {
 
   Future<bool> _connect() async {
     if (_socket != null) return true;
+    if (_bridgeSource.isEmpty) _bridgeSource = await rootBundle.loadString('termux/bridge.js');
     try {
       final s = await Socket.connect(InternetAddress.loopbackIPv4, 8765, timeout: const Duration(seconds: 2));
       s.done.ignore(); // los errores de escritura llegan también por el stream
@@ -163,6 +184,7 @@ class Bridge extends ChangeNotifier {
           .bind(s)
           .transform(const LineSplitter())
           .listen(_line, onDone: _drop, onError: (_) => _drop(), cancelOnError: true);
+      _send({'op': 'hello'}); // ¿el puente es el de esta versión? (ver _line)
       refreshSessions();
       for (final MapEntry(key: id, value: cwd) in _open.entries) {
         events[id] = [];
@@ -179,11 +201,14 @@ class Bridge extends ChangeNotifier {
   /// Termux y espera hasta 15 s. Reiniciar corta las sesiones; se retoman con el próximo mensaje.
   Future<void> connectOrStart({bool restart = false}) async {
     say('Conectando…');
+    _restarted = restart; // un puente recién reiniciado ya es el nuevo: no reiniciar en bucle
     if (restart) {
       _drop();
     } else if (await connect()) {
       return;
     }
+    say('Despertando Shizuku…');
+    final shizukuUp = await ensureShizuku();
     say('Arrancando el puente en Termux…');
     await startBridge();
     // que start.sh llegue a matar el viejo: si no, conectamos con él justo antes de que muera
@@ -191,6 +216,17 @@ class Bridge extends ChangeNotifier {
     for (var i = 0; i < 15 && !await connect(); i++) {
       await Future<void>.delayed(const Duration(seconds: 1));
     }
+    if (!connected) {
+      // Termux con el proceso muerto a veces ignora el servicio desde atrás: abrirlo lo levanta
+      say('Abriendo Termux…');
+      await native.invokeMethod<String>('openTermux');
+      await Future<void>.delayed(const Duration(seconds: 2));
+      await startBridge();
+      for (var i = 0; i < 15 && !await connect(); i++) {
+        await Future<void>.delayed(const Duration(seconds: 1));
+      }
+    }
+    if (connected && !shizukuUp) say('Puente listo, pero Shizuku no arrancó: abrilo e iniciá el servicio.');
     if (!connected) say('No arrancó: ¿instalaste el entorno? Mirá ~/.pixel-bridge.out en Termux.');
   }
 
@@ -226,11 +262,52 @@ class Bridge extends ChangeNotifier {
       case 'exit':
         busy.remove(id);
         refreshSessions();
+      case 'hello':
+        final v = RegExp(r'const VERSION = (\d+)').firstMatch(_bridgeSource)?[1];
+        if ('${m['version']}' != v) _restartOld();
+      case 'file':
+        _files.remove(m['req'])?.complete(m);
       case 'error':
+        final msg = m['message'] as String?;
+        // un puente viejo no conoce 'hello': es de una versión anterior del launcher
+        if (msg == 'op desconocida: hello') {
+          _restartOld();
+          return;
+        }
         busy.remove(id); // p. ej. no pudo lanzar claude
-        status = m['message'] as String?;
+        status = msg;
     }
     notifyListeners();
+  }
+
+  var _restarted = false;
+  var _bridgeSource = '';
+
+  /// Puente de otra versión (se reinstaló el launcher): se reinicia solo, una vez por conexión.
+  /// Corta las sesiones; siguen con el próximo mensaje.
+  Future<void> _restartOld() async {
+    if (_restarted) return;
+    _restarted = true;
+    say('El puente es de una versión vieja: reiniciándolo…');
+    await connectOrStart(restart: true);
+  }
+
+  final _files = <String, Completer<Map>>{};
+
+  /// Trae un archivo de Debian (lo que generó Claude) y lo deja en el caché; devuelve la ruta local.
+  Future<String> fetchFile(String path) async {
+    if (!connected) throw 'El puente no está conectado.';
+    final req = uuid4();
+    final c = _files[req] = Completer<Map>();
+    _send({'op': 'file', 'req': req, 'path': path});
+    final r = await c.future.timeout(const Duration(seconds: 30), onTimeout: () => {'error': 'no respondió'});
+    _files.remove(req);
+    if (r['error'] != null) throw '${r['error']}';
+    final dir = Directory('${Directory.systemTemp.path}/artifacts')..createSync(recursive: true);
+    // carpeta propia por archivo: dos "index.html" distintos no se pisan
+    final out = File('${dir.path}/${req.substring(0, 8)}/${r['name']}')..createSync(recursive: true);
+    out.writeAsBytesSync(base64Decode(r['data'] as String));
+    return out.path;
   }
 
   void refreshSessions() => _send({'op': 'sessions'});
@@ -277,6 +354,19 @@ class Bridge extends ChangeNotifier {
   void stop(String id) => _send({'op': 'stop', 'id': id});
 
   void close(String id) => _send({'op': 'close', 'id': id});
+
+  /// Borra la sesión del puente (proceso, registro, historia y adjuntos).
+  void delete(String id) {
+    events.remove(id);
+    _open.remove(id);
+    busy.remove(id);
+    sessions = [
+      for (final s in sessions)
+        if (s['id'] != id) s,
+    ];
+    _send({'op': 'delete', 'id': id});
+    notifyListeners();
+  }
 
   String? cwdOf(String? id) =>
       id == null ? null : _open[id] ?? sessions.where((s) => s['id'] == id).firstOrNull?['cwd'] as String?;

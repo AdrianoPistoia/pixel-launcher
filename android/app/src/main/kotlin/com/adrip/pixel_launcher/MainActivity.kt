@@ -12,6 +12,8 @@ import android.os.Build
 import android.os.Bundle
 import android.provider.DocumentsContract
 import android.provider.MediaStore
+import android.webkit.MimeTypeMap
+import androidx.core.content.FileProvider
 import io.flutter.embedding.android.FlutterActivity
 import io.flutter.embedding.engine.FlutterEngine
 import io.flutter.plugin.common.MethodChannel
@@ -160,6 +162,24 @@ class MainActivity : FlutterActivity() {
                         null
                     }.getOrElse { it.message ?: "no se pudo hablar con Termux" },
                 )
+                // Apps que saben abrir este archivo (ACTION_VIEW): [{pkg, label}]
+                "appsFor" -> {
+                    val i = viewIntent(call.argument<String>("path")!!)
+                    result.success(
+                        packageManager.queryIntentActivities(i, 0)
+                            .distinctBy { it.activityInfo.packageName }
+                            .map { mapOf("pkg" to it.activityInfo.packageName, "label" to it.loadLabel(packageManager).toString()) },
+                    )
+                }
+                // Abre un archivo (copia en el caché del launcher) con [pkg], o con lo que elija el sistema. null = ok
+                "openFile" -> result.success(
+                    runCatching {
+                        val i = viewIntent(call.argument<String>("path")!!)
+                        call.argument<String>("pkg")?.let { i.setPackage(it) }
+                        startActivity(i.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK))
+                        null
+                    }.getOrElse { it.message ?: "no se pudo abrir" },
+                )
                 "termuxPermission" -> {
                     if (checkSelfPermission(RUN_COMMAND) == PackageManager.PERMISSION_GRANTED) {
                         result.success(true)
@@ -168,6 +188,19 @@ class MainActivity : FlutterActivity() {
                         requestPermissions(arrayOf(RUN_COMMAND), TERMUX_PERMISSION)
                     }
                 }
+                // Vuelve al launcher tras abrir otra app (Android 10+ restringe arrancar servicios desde atrás)
+                "toFront" -> {
+                    startActivity(Intent(this, MainActivity::class.java).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_REORDER_TO_FRONT))
+                    result.success(null)
+                }
+                "shizukuAlive" -> result.success(Shizuku.pingBinder())
+                // Trae Termux al frente (si su proceso murió, lo levanta)
+                "openTermux" -> result.success(
+                    runCatching {
+                        startActivity(Intent().setClassName("com.termux", "com.termux.app.TermuxActivity").addFlags(Intent.FLAG_ACTIVITY_NEW_TASK))
+                        null
+                    }.getOrElse { it.message ?: "no se pudo abrir Termux" },
+                )
                 "shizukuPermission" -> when {
                     !Shizuku.pingBinder() -> result.success(false)
                     Shizuku.checkSelfPermission() == PackageManager.PERMISSION_GRANTED -> result.success(true)
@@ -272,6 +305,14 @@ class MainActivity : FlutterActivity() {
             }
             runOnUiThread { result.success(photos) }
         }.start()
+    }
+
+    private fun viewIntent(path: String): Intent {
+        val f = File(path)
+        val mime = MimeTypeMap.getSingleton().getMimeTypeFromExtension(f.extension.lowercase()) ?: "*/*"
+        return Intent(Intent.ACTION_VIEW)
+            .setDataAndType(FileProvider.getUriForFile(this, "$packageName.files", f), mime)
+            .addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
     }
 
     private val shizukuListener = Shizuku.OnRequestPermissionResultListener { code, grant ->
